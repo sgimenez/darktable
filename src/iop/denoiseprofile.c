@@ -1388,60 +1388,21 @@ void reload_defaults(dt_iop_module_t *module)
 {
   // our module is disabled by default
   module->default_enabled = 0;
-  dt_iop_denoiseprofile_gui_data_t *g = (dt_iop_denoiseprofile_gui_data_t *)module->gui_data;
-  if(g)
+
+  dt_iop_denoiseprofile_params_t *p =
+    (dt_iop_denoiseprofile_params_t *)module->default_params;
+
+  p->radius = 1.0f;
+  p->strength = 1.0f;
+  p->mode = MODE_NLMEANS;
+
+  for(int k=0; k<3; k++)
   {
-    dt_bauhaus_combobox_clear(g->profile);
-
-    // get matching profiles:
-    char name[512];
-    if(g->profiles) g_list_free_full(g->profiles, dt_noiseprofile_free);
-    g->profiles = dt_noiseprofile_get_matching(&module->dev->image_storage);
-    g->interpolated = dt_noiseprofile_generic; // default to generic poissonian
-    g_strlcpy(name, _(g->interpolated.name), sizeof(name));
-
-    const int iso = module->dev->image_storage.exif_iso;
-    dt_noiseprofile_t *last = NULL;
-    for(GList *iter = g->profiles; iter; iter = g_list_next(iter))
-    {
-      dt_noiseprofile_t *current = (dt_noiseprofile_t *)iter->data;
-
-      if(current->iso == iso)
-      {
-        g->interpolated = *current;
-        // signal later autodetection in commit_params:
-        g->interpolated.a[0] = -1.0;
-        snprintf(name, sizeof(name), _("found match for ISO %d"), iso);
-        break;
-      }
-      if(last && last->iso < iso && current->iso > iso)
-      {
-        dt_noiseprofile_interpolate(last, current, &g->interpolated);
-        // signal later autodetection in commit_params:
-        g->interpolated.a[0] = -1.0;
-        snprintf(name, sizeof(name), _("interpolated from ISO %d and %d"), last->iso, current->iso);
-        break;
-      }
-      last = current;
-    }
-
-    dt_bauhaus_combobox_add(g->profile, name);
-    for(GList *iter = g->profiles; iter; iter = g_list_next(iter))
-    {
-      dt_noiseprofile_t *profile = (dt_noiseprofile_t *)iter->data;
-      dt_bauhaus_combobox_add(g->profile, profile->name);
-    }
-
-    ((dt_iop_denoiseprofile_params_t *)module->default_params)->radius = 1.0f;
-    ((dt_iop_denoiseprofile_params_t *)module->default_params)->strength = 1.0f;
-    ((dt_iop_denoiseprofile_params_t *)module->default_params)->mode = MODE_NLMEANS;
-    for(int k = 0; k < 3; k++)
-    {
-      ((dt_iop_denoiseprofile_params_t *)module->default_params)->a[k] = g->interpolated.a[k];
-      ((dt_iop_denoiseprofile_params_t *)module->default_params)->b[k] = g->interpolated.b[k];
-    }
-    memcpy(module->params, module->default_params, sizeof(dt_iop_denoiseprofile_params_t));
+    p->a[k] = -1;
+    p->b[k] = -1;
   }
+
+  memcpy(module->params, module->default_params, sizeof(dt_iop_denoiseprofile_params_t));
 }
 
 /** init, cleanup, commit to pipeline */
@@ -1551,6 +1512,8 @@ void commit_params(struct dt_iop_module_t *self, dt_iop_params_t *params, dt_dev
       d->b[k] = interpolated.b[k];
     }
   }
+
+  if(piece->pipe->type == DT_DEV_PIXELPIPE_THUMBNAIL) piece->enabled = 0;
 }
 
 void init_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -1609,9 +1572,53 @@ static void strength_callback(GtkWidget *w, dt_iop_module_t *self)
 void gui_update(dt_iop_module_t *self)
 {
   // let gui slider match current parameters:
-  dt_iop_denoiseprofile_gui_data_t *g = (dt_iop_denoiseprofile_gui_data_t *)self->gui_data;
-  dt_iop_denoiseprofile_params_t *p = (dt_iop_denoiseprofile_params_t *)self->params;
-  dt_bauhaus_slider_set(g->radius, p->radius);
+  dt_iop_denoiseprofile_gui_data_t *g = self->gui_data;
+  dt_iop_denoiseprofile_params_t *p = (void *)self->params;
+
+  dt_bauhaus_combobox_clear(g->profile);
+
+  // get matching profiles:
+  char name[512];
+  if(g->profiles) g_list_free_full(g->profiles, dt_noiseprofile_free);
+  g->profiles = dt_noiseprofile_get_matching(&self->dev->image_storage);
+  g->interpolated = dt_noiseprofile_generic; // default to generic poissonian
+
+  g_strlcpy(name, _(g->interpolated.name), sizeof(name));
+
+  const int iso = self->dev->image_storage.exif_iso;
+  dt_noiseprofile_t *last = NULL;
+  for(GList *iter = g->profiles; iter; iter = g_list_next(iter))
+  {
+    dt_noiseprofile_t *current = (dt_noiseprofile_t *)iter->data;
+    if(current->iso == iso)
+    {
+      g->interpolated = *current;
+      // signal later autodetection in commit_params:
+      g->interpolated.a[0] = -1.0;
+      snprintf(name, sizeof(name), _("found match for ISO %d"), iso);
+      break;
+    }
+    if(last && last->iso < iso && current->iso > iso)
+    {
+      dt_noiseprofile_interpolate(last, current, &g->interpolated);
+      // signal later autodetection in commit_params:
+      g->interpolated.a[0] = -1.0;
+      snprintf(name, sizeof(name), _("interpolated from ISO %d and %d"), last->iso, current->iso);
+      break;
+    }
+    else
+      snprintf(name, sizeof(name), _("no match"));
+  }
+  char profile_name[512];
+  snprintf(profile_name, sizeof(profile_name), "auto: %s", name);
+  dt_bauhaus_combobox_add(g->profile, profile_name);
+  for(GList *iter = g->profiles; iter; iter = g_list_next(iter))
+  {
+    dt_noiseprofile_t *profile = (dt_noiseprofile_t *)iter->data;
+    dt_bauhaus_combobox_add(g->profile, profile->name);
+  }
+
+  dt_bauhaus_slider_set(g->radius,   p->radius);
   dt_bauhaus_slider_set(g->strength, p->strength);
   dt_bauhaus_combobox_set(g->mode, p->mode);
   dt_bauhaus_combobox_set(g->profile, -1);
