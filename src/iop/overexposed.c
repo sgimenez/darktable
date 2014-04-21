@@ -225,6 +225,12 @@ void cleanup_pipe(struct dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev
 {
 }
 
+void reload_defaults(dt_iop_module_t *module)
+{
+  ((dt_iop_overexposed_t *)module->default_params)->dummy = 0;
+  memcpy(module->params, module->default_params, sizeof(dt_iop_overexposed_t));
+}
+
 void init(dt_iop_module_t *module)
 {
   module->params = malloc(sizeof(dt_iop_overexposed_t));
