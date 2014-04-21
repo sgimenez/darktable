@@ -725,9 +725,11 @@ static gboolean scrolled(GtkWidget *widget, GdkEventScroll *event, gpointer user
   if(c->selected >= 0)
   {
     if(event->direction == GDK_SCROLL_UP)
-      basecurve[c->selected].y = MAX(0.0f, basecurve[c->selected].y + 0.001f);
+      basecurve[c->selected].y =
+        MAX(0.0f, basecurve[c->selected].y + 0.004f*basecurve[c->selected].x + 0.0001f);
     if(event->direction == GDK_SCROLL_DOWN)
-      basecurve[c->selected].y = MIN(1.0f, basecurve[c->selected].y - 0.001f);
+      basecurve[c->selected].y =
+        MIN(1.0f, basecurve[c->selected].y - 0.004f*basecurve[c->selected].x - 0.0001f);
     dt_dev_add_history_item(darktable.develop, self, TRUE);
     gtk_widget_queue_draw(widget);
   }
@@ -758,7 +760,7 @@ void gui_init(struct dt_iop_module_t *self)
     (void)dt_draw_curve_add_point(c->minmax_curve, p->basecurve[0][k].x, p->basecurve[0][k].y);
   c->mouse_x = c->mouse_y = -1.0;
   c->selected = -1;
-  c->loglogscale = 0;
+  c->loglogscale = 64;
 
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
   c->area = GTK_DRAWING_AREA(dtgtk_drawing_area_new_with_aspect_ratio(1.0));
@@ -771,6 +773,7 @@ void gui_init(struct dt_iop_module_t *self)
   dt_bauhaus_widget_set_label(c->scale, NULL, _("scale"));
   dt_bauhaus_combobox_add(c->scale, _("linear"));
   dt_bauhaus_combobox_add(c->scale, _("logarithmic"));
+  dt_bauhaus_combobox_set(c->scale, 1);
   g_object_set(c->scale, "tooltip-text",
                _("scale to use in the graph. use logarithmic scale for more precise control near the blacks"),
                (char *)NULL);
