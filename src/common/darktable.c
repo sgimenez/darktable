@@ -1065,15 +1065,18 @@ void dt_gettime(char *datetime, size_t datetime_len)
 
 void *dt_alloc_align(size_t alignment, size_t size)
 {
+  void *p;
 #if defined(__MACH__) || defined(__APPLE__) || (defined(__FreeBSD_version) && __FreeBSD_version < 700013)
-  return malloc(size);
+  p = malloc(size);
 #elif defined(__WIN32__)
-  return _aligned_malloc(size, alignment);
+  p = _aligned_malloc(size, alignment);
 #else
   void *ptr = NULL;
   if(posix_memalign(&ptr, alignment, size)) return NULL;
-  return ptr;
+  p = ptr;
 #endif
+  memset(p, 0, size);
+  return p;
 }
 
 #ifdef __WIN32__
