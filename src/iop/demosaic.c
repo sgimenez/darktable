@@ -33,8 +33,7 @@
 // we assume people have -msee support.
 #include <xmmintrin.h>
 
-#define BLOCKSIZE                                                                                            \
-  2048 /* maximum blocksize. must be a power of 2 and will be automatically reduced if needed */
+#define BLOCKSIZE 2048 // maximum blocksize. must be a power of 2 and will be automatically reduced if needed
 
 DT_MODULE_INTROSPECTION(3, dt_iop_demosaic_params_t)
 
@@ -1154,32 +1153,37 @@ static void vng_interpolate(float *out, const float *const in, const dt_iop_roi_
 static void demosaic_ppg(float *out, const float *in, dt_iop_roi_t *roi_out, const dt_iop_roi_t *roi_in,
                          const int filters, const float thrs)
 {
-  // snap to start of mosaic block:
-  roi_out->x = 0; // MAX(0, roi_out->x & ~1);
-  roi_out->y = 0; // MAX(0, roi_out->y & ~1);
-  // offsets only where the buffer ends:
-  const int offx = 3; // MAX(0, 3 - roi_out->x);
-  const int offy = 3; // MAX(0, 3 - roi_out->y);
-  const int offX = 3; // MAX(0, 3 - (roi_in->width  - (roi_out->x + roi_out->width)));
-  const int offY = 3; // MAX(0, 3 - (roi_in->height - (roi_out->y + roi_out->height)));
+  const int iwidth  = roi_in->width;
+  const int iheight = roi_in->height;
+  const int owidth  = roi_out->width;
+  const int oheight = roi_out->height;
 
-  // these may differ a little, if you're unlucky enough to split a bayer block with cropping or similar.
-  // we never want to access the input out of bounds though:
-  assert(roi_in->width >= roi_out->width);
-  assert(roi_in->height >= roi_out->height);
+  printf("ppg: i.w=%d i.h=%d i.x=%d i.y=%d s=%f\n",
+         iwidth, iheight, roi_in->x, roi_in->y, roi_in->scale);
+  printf("ppg: o.w=%d o.h=%d o.x=%d o.y=%d s=%f\n",
+         owidth, oheight, roi_out->x, roi_out->y, roi_out->scale);
+
+  // FIXME: o happens to be larger than i sometimes
+
+  // snap to start of mosaic block:
+  const int dx = 0; //roi_out->x - roi_in->x;
+  const int dy = 0; //roi_out->y - roi_in->y;
+  // offsets only where the buffer ends:
+  const int offx = 8;
+  const int offy = 8;
+  const int offX = 8;
+  const int offY = 8;
+
   // border interpolate
   float sum[8];
   for(int j = 0; j < roi_out->height; j++)
     for(int i = 0; i < roi_out->width; i++)
     {
-      if(i == offx && j >= offy && j < roi_out->height - offY) i = roi_out->width - offX;
-      if(i == roi_out->width) break;
-      memset(sum, 0, sizeof(float) * 8);
-      for(int y = j - 1; y != j + 2; y++)
-        for(int x = i - 1; x != i + 2; x++)
+      memset(sum, 0, 8 * sizeof(float));
+      for (int y = j - 1; y != j + 2; y++) for (int x = i - 1; x != i + 2; x++)
         {
-          const int yy = y + roi_out->y, xx = x + roi_out->x;
-          if(yy >= 0 && xx >= 0 && yy < roi_in->height && xx < roi_in->width)
+          const int yy = y + dy, xx = x + dx;
+          if (yy >= 0 && xx >= 0 && yy < roi_in->height && xx < roi_in->width)
           {
             int f = FC(y, x, filters);
             sum[f] += in[(size_t)yy * roi_in->width + xx];
@@ -1192,8 +1196,11 @@ static void demosaic_ppg(float *out, const float *in, dt_iop_roi_t *roi_out, con
         if(c != f && sum[c + 4] > 0.0f)
           out[4 * ((size_t)j * roi_out->width + i) + c] = sum[c] / sum[c + 4];
         else
-          out[4 * ((size_t)j * roi_out->width + i) + c]
-              = in[((size_t)j + roi_out->y) * roi_in->width + i + roi_out->x];
+        {
+          const int yy = j + dy, xx = i + dx;
+          if (yy >= 0 && xx >= 0 && yy < roi_in->height && xx < roi_in->width)
+            out[4 * ((size_t)j * roi_out->width + i) + c] = in[(size_t)yy * roi_in->width + xx];
+        }
       }
     }
   const int median = thrs > 0.0f;
@@ -1211,8 +1218,8 @@ static void demosaic_ppg(float *out, const float *in, dt_iop_roi_t *roi_out, con
   for(int j = offy; j < roi_out->height - offY; j++)
   {
     float *buf = out + (size_t)4 * roi_out->width * j + 4 * offx;
-    const float *buf_in = in + (size_t)roi_in->width * (j + roi_out->y) + offx + roi_out->x;
-    for(int i = offx; i < roi_out->width - offX; i++)
+    const float *buf_in = in + (size_t)roi_in->width * (j + dy) + offx + dx;
+    for (int i = offx; i < roi_out->width - offX; i++)
     {
       const int c = FC(j, i, filters);
       // prefetch what we need soon (load to cpu caches)
@@ -1436,6 +1443,25 @@ static int get_thumb_quality(int width, int height)
 void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, void *i, void *o,
              const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out)
 {
+#if DEMOSAIC_DEBUG
+  const int iwidth  = roi_in->width;
+  const int iheight = roi_in->height;
+  const int owidth  = roi_out->width;
+  const int oheight = roi_out->height;
+#endif
+
+#if DEMOSAIC_DEBUG
+  printf("demosaic: i.w=%d i.h=%d i.x=%d i.y=%d s=%f\n",
+         iwidth, iheight, roi_in->x, roi_in->y, roi_in->scale);
+  printf("demosaic: o.w=%d o.h=%d o.x=%d o.y=%d s=%f\n",
+         owidth, oheight, roi_out->x, roi_out->y, roi_out->scale);
+#endif
+
+#if DEMOSAIC_DEBUG
+  clock_t time_start = clock();
+  clock_t time_end;
+#endif
+
   const dt_image_t *img = &self->dev->image_storage;
   const float threshold = 0.0001f * img->exif_iso;
 
@@ -1546,6 +1572,12 @@ void process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, void *
                                                 data->filters, clip);
   }
   if(data->color_smoothing) color_smoothing(o, roi_out, data->color_smoothing);
+
+#if DEMOSAIC_DEBUG
+  time_end = clock();
+  printf("demosaic: processed in %f seconds (cpu time)\n",
+         (float)(time_end-time_start)/CLOCKS_PER_SEC);
+#endif
 }
 
 #ifdef HAVE_OPENCL
