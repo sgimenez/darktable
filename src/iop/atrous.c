@@ -164,11 +164,16 @@ static int get_samples(float *t, const dt_iop_atrous_data_t *const d, const dt_i
   const float supp0
       = MIN(2 * (2 << (MAX_NUM_SCALES - 1)) + 1, MAX(piece->buf_in.height, piece->buf_in.width) * 0.2f);
   const float i0 = dt_log2f((supp0 - 1.0f) * .5f);
+
+  int imin = 0;
+  while ((float)(2 * (2 << imin) + 1) < scale)
+    imin++;
+
   int i = 0;
   for(; i < MAX_NUM_SCALES; i++)
   {
     // actual filter support on scaled buffer
-    const float supp = 2 * (2 << i) + 1;
+    const float supp = 2 * (2 << (imin + i)) + 1;
     // approximates this filter size on unscaled input image:
     const float supp_in = supp * (1.0f / scale);
     const float i_in = dt_log2f((supp_in - 1) * .5f) - 1.0f;
@@ -178,8 +183,9 @@ static int get_samples(float *t, const dt_iop_atrous_data_t *const d, const dt_i
   return i;
 }
 
-static int get_scales(float (*thrs)[4], float (*boost)[4], float *sharp, const dt_iop_atrous_data_t *const d,
-                      const dt_iop_roi_t *roi_in, const dt_dev_pixelpipe_iop_t *const piece)
+static void get_scales(int *min, int *max,
+                       float (*thrs)[4], float (*boost)[4], float *sharp, const dt_iop_atrous_data_t *const d,
+                       const dt_iop_roi_t *roi_in, const dt_dev_pixelpipe_iop_t *const piece)
 {
   // we want coeffs to span max 20% of the image
   // finest is 5x5 filter
@@ -197,11 +203,17 @@ static int get_scales(float (*thrs)[4], float (*boost)[4], float *sharp, const d
       = MIN(2 * (2 << (MAX_NUM_SCALES - 1)) + 1,
             MAX(piece->buf_in.height * piece->iscale, piece->buf_in.width * piece->iscale) * 0.2f);
   const float i0 = dt_log2f((supp0 - 1.0f) * .5f);
+
+  int imin = 0;
+  while ((float)(2 * (2 << imin) + 1) < scale)
+    imin++;
+
   int i = 0;
   for(; i < MAX_NUM_SCALES; i++)
   {
     // actual filter support on scaled buffer
-    const float supp = 2 * (2 << i) + 1;
+    const float supp = 2 * (2 << (imin + i)) + 1;
+
     // approximates this filter size on unscaled input image:
     const float supp_in = supp * (1.0f / scale);
     const float i_in = dt_log2f((supp_in - 1) * .5f) - 1.0f;
@@ -219,7 +231,8 @@ static int get_scales(float (*thrs)[4], float (*boost)[4], float *sharp, const d
     // thrs[i][1], sharp[i]);
     if(t < 0.0f) break;
   }
-  return i;
+  *min = imin;
+  *max = imin + i;
 }
 
 /* just process the supplied image buffer, upstream default_process_tiling() does the rest */
@@ -230,7 +243,8 @@ void process(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
   float thrs[MAX_NUM_SCALES][4];
   float boost[MAX_NUM_SCALES][4];
   float sharp[MAX_NUM_SCALES];
-  const int max_scale = get_scales(thrs, boost, sharp, d, roi_in, piece);
+  int min_scale, max_scale;
+  get_scales(&min_scale, &max_scale, thrs, boost, sharp, d, roi_in, piece);
 
   if(self->dev->gui_attached && piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
   {
@@ -255,7 +269,7 @@ void process(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
     goto error;
   }
 
-  for(int k = 0; k < max_scale; k++)
+  for(int k = 0; k < max_scale - min_scale; k++)
   {
     detail[k] = (float *)dt_alloc_align(64, (size_t)sizeof(float) * 4 * width * height);
     if(detail[k] == NULL)
@@ -268,25 +282,27 @@ void process(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
   buf1 = (float *)i;
   buf2 = tmp;
 
-  for(int scale = 0; scale < max_scale; scale++)
+  for(int scale = min_scale; scale < max_scale; scale++)
   {
-    eaw_decompose(buf2, buf1, detail[scale], scale, sharp[scale], width, height);
-    if(scale == 0) buf1 = (float *)o; // now switch to (float *)o for buffer ping-pong between buf1 and buf2
+    int k = scale - min_scale;
+    eaw_decompose(buf2, buf1, detail[k], scale, sharp[k], width, height);
+    if(k == 0) buf1 = (float *)o;  // now switch to (float *)o for buffer ping-pong between buf1 and buf2
     float *buf3 = buf2;
     buf2 = buf1;
     buf1 = buf3;
   }
 
-  for(int scale = max_scale - 1; scale >= 0; scale--)
+  for(int scale = max_scale - 1; scale >= min_scale; scale--)
   {
-    eaw_synthesize(buf2, buf1, detail[scale], thrs[scale], boost[scale], width, height);
+    int k = scale - min_scale;
+    eaw_synthesize(buf2, buf1, detail[k], thrs[k], boost[k], width, height);
     float *buf3 = buf2;
     buf2 = buf1;
     buf1 = buf3;
   }
   /* due to symmetric processing, output will be left in (float *)o */
 
-  for(int k = 0; k < max_scale; k++) dt_free_align(detail[k]);
+  for(int k = 0; k < max_scale - min_scale; k++) dt_free_align(detail[k]);
   dt_free_align(tmp);
 
   if(piece->pipe->mask_display) dt_iop_alpha_copy(i, o, width, height);
@@ -294,7 +310,7 @@ void process(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece,
   return;
 
 error:
-  for(int k = 0; k < max_scale; k++)
+  for(int k = 0; k < max_scale - min_scale; k++)
     if(detail[k] != NULL) dt_free_align(detail[k]);
   if(tmp != NULL) dt_free_align(tmp);
   return;
@@ -309,7 +325,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   float thrs[MAX_NUM_SCALES][4];
   float boost[MAX_NUM_SCALES][4];
   float sharp[MAX_NUM_SCALES];
-  const int max_scale = get_scales(thrs, boost, sharp, d, roi_in, piece);
+  int min_scale, max_scale;
+  get_scales(&min_scale, &max_scale, thrs, boost, sharp, d, roi_in, piece);
 
   if(self->dev->gui_attached && piece->pipe->type == DT_DEV_PIXELPIPE_FULL)
   {
@@ -326,8 +343,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   cl_int err = -999;
   cl_mem dev_filter = NULL;
   cl_mem dev_tmp = NULL;
-  cl_mem dev_detail[max_scale];
-  for(int k = 0; k < max_scale; k++) dev_detail[k] = NULL;
+  cl_mem dev_detail[max_scale - min_scale];
+  for(int k = 0; k < max_scale - min_scale; k++) dev_detail[k] = NULL;
 
   float m[] = { 0.0625f, 0.25f, 0.375f, 0.25f, 0.0625f }; // 1/16, 4/16, 6/16, 4/16, 1/16
   float mm[5][5];
@@ -344,7 +361,7 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
 
   /* allocate space to store detail information. Requires a number of additional buffers, each with full image
    * size */
-  for(int k = 0; k < max_scale; k++)
+  for(int k = 0; k < max_scale - min_scale; k++)
   {
     dev_detail[k] = dt_opencl_alloc_device(devid, roi_out->width, roi_out->height, 4 * sizeof(float));
     if(dev_detail[k] == NULL) goto error;
@@ -449,10 +466,12 @@ void tiling_callback(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t
   float thrs[MAX_NUM_SCALES][4];
   float boost[MAX_NUM_SCALES][4];
   float sharp[MAX_NUM_SCALES];
-  const int max_scale = get_scales(thrs, boost, sharp, d, roi_in, piece);
+
+  int min_scale, max_scale;
+  get_scales(&min_scale, &max_scale, thrs, boost, sharp, d, roi_in, piece);
   const int max_filter_radius = (1 << max_scale); // 2 * 2^max_scale
 
-  tiling->factor = 3.0f + max_scale; // in + out + tmp + scale buffers
+  tiling->factor = 3.0f + max_scale - min_scale; // in + out + tmp + scale buffers
   tiling->maxbuf = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = max_filter_radius;
