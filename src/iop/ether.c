@@ -22,62 +22,60 @@
 #include "bauhaus/bauhaus.h"
 #include "common/darktable.h"
 #include "common/linsolve.c"
-#include "common/interpolation.h"
+#include "common/maze.h"
 #include "develop/imageop.h"
 #include "gui/gtk.h"
 #include <gtk/gtk.h>
 #include <stdlib.h>
 
-#define CACORRECT_DEBUG 0
+#define ETHER_DEBUG 1
 
 #define CA_SHIFT 8 // max allowed CA shift, must be even
 
+const int interpolation_max_width = 8;
+
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
-DT_MODULE_INTROSPECTION(1, dt_iop_cacorrect_params_t)
+DT_MODULE_INTROSPECTION(1, dt_iop_ether_params_t)
 
-typedef struct dt_iop_cacorrect_params_t
+typedef struct dt_iop_ether_params_t
 {
-  int type;
-} dt_iop_cacorrect_params_t;
+  int cacorrect; // rename to ca_type
+  float scaling;
+} dt_iop_ether_params_t;
 
-typedef struct dt_iop_cacorrect_gui_data_t
+typedef struct dt_iop_ether_gui_data_t
 {
   GtkWidget *tcombo;
-} dt_iop_cacorrect_gui_data_t;
+} dt_iop_ether_gui_data_t;
 
-typedef struct dt_iop_cacorrect_data_t
+typedef struct dt_iop_ether_data_t
 {
-  int type;
+  int cacorrect;
+  float scaling;
   int degree;
-  const struct dt_interpolation *ip;
   void *fitdata;
-} dt_iop_cacorrect_data_t;
+} dt_iop_ether_data_t;
 
-typedef struct dt_iop_cacorrect_global_data_t
+typedef struct dt_iop_ether_global_data_t
 {
-} dt_iop_cacorrect_global_data_t;
+} dt_iop_ether_global_data_t;
 
 // this returns a translatable name
 const char *name()
 {
   // make sure you put all your translatable strings into _() !
-  return _("chromatic aberrations");
+  return _("etherize");
 }
 
 int groups()
 {
-  return IOP_GROUP_CORRECT;
+  return IOP_GROUP_BASIC;
 }
 
 int flags()
 {
   return IOP_FLAGS_ONE_INSTANCE;
-}
-
-int output_bpp(dt_iop_module_t *module, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
-{
-  return sizeof(float);
 }
 
 static int get_degree()
@@ -90,11 +88,6 @@ static int get_radial_degree()
   return dt_conf_get_int("plugins/darkroom/cacorrect/radial_degree");
 }
 
-static int get_displayed()
-{
-  return dt_conf_get_int("plugins/darkroom/cacorrect/display");
-}
-
 static int get_visuals()
 {
   return dt_conf_get_int("plugins/darkroom/cacorrect/visuals");
@@ -102,11 +95,12 @@ static int get_visuals()
 
 // not activated but the old dummy value was 50
 int legacy_params(dt_iop_module_t *self, const void *const old_params, const int old_version,
-                  dt_iop_cacorrect_params_t *new_p, const int new_version)
+                  dt_iop_ether_params_t *new_p, const int new_version)
 {
   if(old_version == 1 && new_version == 2)
   {
-    new_p->type = 0;
+    new_p->cacorrect = 1;
+    new_p->scaling = 2.0;
     return 0;
   }
   return 1;
@@ -115,7 +109,7 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
 void modify_roi_in(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi_out,
                    dt_iop_roi_t *roi_in)
 {
-  dt_iop_cacorrect_data_t *d = piece->data;
+  dt_iop_ether_data_t *d = piece->data;
   if(1 || !d->fitdata)
   {
     // we want all of it
@@ -125,7 +119,7 @@ void modify_roi_in(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const d
     roi_in->height = piece->pipe->image.height;
   }
   else { // decreases performance since the buffer has to be adapted
-    const int margin = CA_SHIFT + d->ip->width * 2;
+    const int margin = CA_SHIFT + interpolation_max_width;
     roi_in->width  = roi_out->width + 2 * margin;
     roi_in->height = roi_out->height + 2 * margin;
     roi_in->x = roi_out->x - margin;
@@ -135,27 +129,32 @@ void modify_roi_in(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const d
     roi_in->width = MIN(piece->pipe->image.width, roi_in->width);
     roi_in->height = MIN(piece->pipe->image.height, roi_in->height);
   }
+  roi_in->scale = 1.0f;
 }
 
 static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *const piece,
-                       const float *const in, float *const out, const dt_iop_roi_t *const roi_in,
-                       const dt_iop_roi_t *const roi_out)
+                       const float *const idata, float *const odata,
+                       const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_cacorrect_data_t *d = piece->data;
+  dt_iop_ether_data_t *d = piece->data;
 
   const int iwidth  = roi_in->width;
   const int iheight = roi_in->height;
   const int isize = MIN(iwidth, iheight);
   const int owidth  = roi_out->width;
   const int oheight = roi_out->height;
-  const int offv = roi_out->y - roi_in->y;
-  const int offh = roi_out->x - roi_in->x;
+  const float oscale = roi_out->scale;
+  const int ox = roi_out->x;
+  const int oy = roi_out->y;
+  const int ix = roi_in->x;
+  const int iy = roi_in->y;
+  const int ch = piece->colors;
 
   const uint32_t filters = dt_image_filter(&piece->pipe->image);
   const int ca = (filters & 3) != 1, fb = (filters >> (!ca << 2) & 3) == 2;
 
   const int sl = CA_SHIFT;
-  const int radial = d->type == 1;
+  const int radial = d->cacorrect == 2;
   const int deg = d->degree;
   const int degn = lin_size(radial ? 1 : 2, deg);
 
@@ -171,7 +170,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
   int visuals = get_visuals();
 
-#if CACORRECT_DEBUG
+#if ETHER_DEBUG
   clock_t time_begin = clock();
   clock_t time_start = time_begin;
   clock_t time_end;
@@ -184,7 +183,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
     for(int coeff = 0; coeff < ncoeff; coeff++)
       lin_zero(degn, fitmat[color][coeff], fitvec[color][coeff]);
 
-#if CACORRECT_DEBUG
+#if ETHER_DEBUG
   printf("cacorrect: pre-analysis\n");
 #endif
 
@@ -206,7 +205,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
         int c = 0;
         const int inr = top + r;
         const int inc = left + c;
-        const float *pi = in + (size_t)iwidth*inr + inc;
+        const float *pi = idata + (size_t)iwidth*inr + inc;
         float *po = &rgb[r][c];
 #if __SSE2__
         for(; c + 3 < cm; pi += 4, po += 4, c += 4)
@@ -363,29 +362,30 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
           if(visuals)
           {
             const int rad = 6;
-            const int outr = inr - offv;
-            const int outc = inc - offh + !((outr + ca) & 1);
-            float *outp = out + (size_t)owidth * outr + outc;
+            const int outr = (inr + iy + 0.5) * oscale - 0.5 - oy;
+            const int outc = (inc + ix + 0.5) * oscale - 0.5 - ox;
+            float *outp = odata + (size_t)owidth*outr + outc;
             if(outr >= rad && outr < oheight - rad &&
                 outc >= rad && outc < owidth - rad)
             {
-              const float s =
-                sqrt(bw[0][0] * bw[0][0] + bw[0][1] * bw[0][1]) / 4 +
-                sqrt(bw[1][0] * bw[1][0] + bw[1][1] * bw[1][1]) / 4;
-              for(int di = -rad + 1; di <= rad; di += 2)
-                for(int dj = -rad; dj <= rad; dj += 2)
+              const float sr =
+                sqrtf(bw[0][0] * bw[0][0] + bw[0][1] * bw[0][1]) / 4;
+              const float sb =
+                sqrtf(bw[1][0] * bw[1][0] + bw[1][1] * bw[1][1]) / 4;
+              for(int di = -rad; di <= rad; di++)
+                for(int dj = -rad; dj <= rad; dj++)
                 {
                   int d2 = di * di + dj * dj;
                   if(d2 < rad * rad)
                   {
-                    outp[owidth * di + dj] += fmin(0.5, s / exp(1.5 * d2));
-                    outp[owidth * dj + di] += fmin(0.5, s / exp(1.5 * d2));
+                    outp[ch * owidth * di + dj + 0] += fmin(0.5, sr / expf(1.5 * d2));
+                    outp[ch * owidth * di + ch * dj + 2] += fmin(0.5, sb / expf(1.5 * d2));
                   }
                 }
             }
           }
 
-#if CACORRECT_DEBUG
+#if ETHER_DEBUG
           if(y > -0.05 && y < 0.05 && x > -0.05 && x < 0.05)
           {
             printf("x=%+.4lf y=%+.4lf g=%.2lf r  ", x, y, rgb[r][c]);
@@ -425,7 +425,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
   // end of pre-analysis
 
-#if CACORRECT_DEBUG
+#if ETHER_DEBUG
   time_end = clock();
   printf("time: %f\n", (float)(time_end - time_start) / CLOCKS_PER_SEC);
   time_start = time_end;
@@ -446,7 +446,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
       if(radial)
       {
-#if CACORRECT_DEBUG
+#if ETHER_DEBUG
         printf("cacorrect: radial color=%d offset=%+f\n",
                color, fitsol[color][coeff][0]);
 #endif
@@ -454,11 +454,11 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
       }
     }
 
-#if CACORRECT_DEBUG
+#if ETHER_DEBUG
   time_end = clock();
   printf("time: %f\n", (float)(time_end - time_start) / CLOCKS_PER_SEC);
   time_start = time_end;
-  printf("cacorrect: analyse in %f seconds (cpu time)\n",
+  printf("ether: analyse in %f seconds (cpu time)\n",
          (float)(time_end - time_begin) / CLOCKS_PER_SEC);
 #endif
 
@@ -468,23 +468,27 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 }
 
 static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *const piece,
-                       const float *const in, float *const out,
+                       const float *const idata, float *const odata,
                        const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_cacorrect_data_t *d = piece->data;
+  dt_iop_ether_data_t *d = piece->data;
 
   const int iwidth  = roi_in->width;
   const int iheight = roi_in->height;
-  const int isize = MIN(iwidth, iheight);
   const int owidth  = roi_out->width;
   const int oheight = roi_out->height;
-  const int offv = roi_out->y - roi_in->y;
-  const int offh = roi_out->x - roi_in->x;
+  const int isize = MIN(iwidth, iheight);
+  const float oscale = roi_out->scale;
+  const int ox = roi_out->x;
+  const int oy = roi_out->y;
+  const int ix = roi_in->x;
+  const int iy = roi_in->y;
+  const int ch = piece->colors;
 
-#if CACORRECT_DEBUG
-  printf("cacorrect: i.w=%d i.h=%d i.x=%d i.y=%d s=%f\n",
+#if ETHER_DEBUG
+  printf("ether: i.w=%d i.h=%d i.x=%d i.y=%d s=%f\n",
          iwidth, iheight, roi_in->x, roi_in->y, roi_in->scale);
-  printf("cacorrect: o.w=%d o.h=%d o.x=%d o.y=%d s=%f\n",
+  printf("ether: o.w=%d o.h=%d o.x=%d o.y=%d s=%f\n",
          owidth, oheight, roi_out->x, roi_out->y, roi_out->scale);
 #endif
 
@@ -492,7 +496,8 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   const int ca = (filters & 3) != 1, fb = (filters >> (!ca << 2) & 3) == 2;
 
   const int sl = CA_SHIFT;
-  const int radial = d->type == 1;
+  int generic = d->cacorrect == 1;
+  int radial = d->cacorrect == 2;
   const int deg = d->degree;
   const int degn = lin_size(radial ? 1 : 2, deg);
 
@@ -501,128 +506,132 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
   int visuals = get_visuals();
 
-  // do the fitting if not already computed
-  if(!d->fitdata)
-    CA_analyse(self, piece, in, out, roi_in, roi_out);
-
-  if(!d->fitdata)
-    return;
-
-  // retrieve fit coefficients
   float fitsol[2][ncoeff][degn];
-  memcpy(fitsol, d->fitdata, sizeof(fitsol));
+  if(d->cacorrect)
+  {
+    // do the fitting if not already computed
+    if(!d->fitdata)
+      CA_analyse(self, piece, idata, odata, roi_in, roi_out);
 
-#if CACORRECT_DEBUG
+    // retrieve fit coefficients
+    if(d->fitdata)
+      memcpy(fitsol, d->fitdata, sizeof(fitsol));
+    else
+      generic = radial = 0;
+  }
+
+#if ETHER_DEBUG
   clock_t time_start = clock();
   clock_t time_end;
 #endif
 
-  const int margin = sl + 2 * d->ip->width;
+  maze_image_t img;
+  img.ch = 3;
+  img.data = (float *)idata;
+  img.sst = 1;
+  img.lst = iwidth;
+  img.xmin = 0;
+  img.ymin = 0;
+  img.xmax = iwidth;
+  img.ymax = iheight;
+  const int patdata[] =
+    {
+      0, 1,
+      1, 2,
+    };
+  const float patquant[] = { 2.0/5.0, 1.0/5.0, 2.0/5.0 };
+  maze_pattern_t pat;
+  pat.x = 2;
+  pat.y = 2;
+  pat.data = patdata;
+  pat.quant = patquant;
+  pat.offx = !ca & 1;
+  pat.offy = fb & 1;
 
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-  for(int top = -margin; top < oheight + margin; top += TS - 2*margin)
-    for(int left = -margin; left < owidth + margin; left += TS - 2*margin)
+  for(int oby = 0; oby < oheight; oby += TS)
+    for(int obx = 0; obx < owidth; obx += TS)
     {
-      const int rm = top + TS > oheight + margin ? oheight + margin - top : TS;
-      const int cm = left + TS > owidth + margin ? owidth + margin - left : TS;
+      int oex = MIN(owidth, obx + TS);
+      int oey = MIN(oheight, oby + TS);
 
-      for(int color = 0; color < 2; color++)
-      {
-        float vc[TS / 2][TS / 2] __attribute__((aligned(16)));
-        for(int r = 0; r < rm / 2; r++)
-          for(int c = 0; c < cm / 2; c++)
+      for(int outr = oby; outr < oey; outr++)
+        for(int outc = obx; outc < oex; outc++)
+        {
+          float bc[3][2] = { { } };
+          const float y = (2 * (outr + oy + 0.5) / oscale - iheight) / isize;
+          const float x = (2 * (outc + ox + 0.5) / oscale - iwidth) / isize;
+
+          // compute the polynomial
+          if(radial)
           {
-            const int inr = top + 2 * r + offv + ((color + fb) & 1);
-            const int inc = left + 2 * c + offh + !((color + fb + ca) & 1);
-            if(inr >= 0 && inr < iheight && inc >= 0 && inc < iwidth)
-              vc[r][c] = in[(size_t)iwidth * inr + inc];
-            else
-              vc[r][c] = 0. / 0.; // nan values will be extrapolated
+            const float rad = sqrtf(x * x + y * y);
+            if(rad != 0.0)
+            {
+              float vr = lin_get1(deg, fitsol[0][0], rad);
+              float vb = lin_get1(deg, fitsol[1][0], rad);
+              bc[0][0] = vr * y / rad;
+              bc[0][1] = vr * x / rad;
+              bc[2][0] = vb * y / rad;
+              bc[2][1] = vb * x / rad;
+            }
+          }
+          else if(generic)
+          {
+            for(int coeff = 0; coeff < ncoeff; coeff++)
+            {
+              bc[0][coeff] = lin_get2(deg, fitsol[0][coeff], x, y);
+              bc[2][coeff] = lin_get2(deg, fitsol[1][coeff], x, y);
+            }
           }
 
-        // gamma = 2.0
-        for(int r = 0; r < rm / 2; r++)
-        {
-          int c = 0;
-          float *p0 = &vc[r][c];
-#if __SSE2__
-          for(; c + 3 < cm / 2; p0 += 4, c += 4)
-            _mm_store_ps(p0, _mm_sqrt_ps(_mm_load_ps(p0)));
-#endif
-          for(; c < cm / 2; p0 += 1, c += 1)
-            *p0 = sqrt(*p0);
-        }
-
-        for(int r = margin + ((color + fb) & 1); r < rm - margin; r += 2)
-          for(int c = margin + !((color + fb + ca) & 1); c < cm - margin; c += 2)
+          const float ir = (outr + oy + 0.5) / oscale - iy - 0.5;
+          const float ic = (outc + ox + 0.5) / oscale - ix - 0.5;
+          float bv[3], bh[3];
+          for(int color = 0; color < 3; color++)
           {
-            const int outr = top + r;
-            const int outc = left + c;
-            const int inr = outr + offv;
-            const int inc = outc + offh;
+            bv[color] = ir + CLAMPS(bc[color][0], -sl, sl);
+            bh[color] = ic + CLAMPS(bc[color][1], -sl, sl);
+          }
 
-            float bc[2] = { };
-            const float y = (2 * (inr + 0.5) - iheight) / isize;
-            const float x = (2 * (inc + 0.5) - iwidth) / isize;
+          // shift by interpolation
+          float val[3];
+          const float r = 2 / M_PI / oscale;
+          const float rmax = 3;
+          if(r > rmax)
+            dt_maze_mosaic_downsample(&img, &pat, r, bh, bv, val);
+          else
+            dt_maze_mosaic_interpolate(&img, &pat, 2, r, bh, bv, val);
+          for(int color = 0; color < 3; color += 2)
+            val[color] = fmaxf(0.0, val[color]);
 
-            // compute the polynomial
-            if(radial)
+          // show shift norms as isos
+          if(visuals)
+            for(int color = 0; color < 3; color += 2) // excludes green
             {
-              const float rad = sqrtf(x * x + y * y);
-              if(rad != 0.0)
-              {
-                float v = lin_get1(deg, fitsol[color][0], rad);
-                bc[0] = v * y / rad;
-                bc[1] = v * x / rad;
-              }
-            }
-            else
-            {
-              for(int coeff = 0; coeff < ncoeff; coeff++)
-              {
-                bc[coeff] = lin_get2(deg, fitsol[color][coeff], x, y);
-                bc[coeff] = lin_get2(deg, fitsol[color][coeff], x, y);
-              }
-            }
-
-            const float bv = CLAMPS(bc[0], -sl, sl);
-            const float bh = CLAMPS(bc[1], -sl, sl);
-
-            // shift by interpolation
-            const int xmin = MAX(-inc, -margin);
-            const int ymin = MAX(-inr, -margin);
-            const int xmax = MIN(iwidth - inc, +margin);
-            const int ymax = MIN(iheight - inr, +margin);
-            float v = dt_interpolation_compute_extrapolated_sample(
-              d->ip, &vc[r/2][c/2], bh/2, bv/2, xmin/2, ymin/2, xmax/2 - 1, ymax/2 - 1, 1, TS/2);
-            v = fmax(0., v);
-
-            // show shift norms as isos
-            if(visuals)
-            {
-              const float norm = sqrt(bv * bv + bh * bh);
+              const float norm =
+                sqrtf(bv[color] * bv[color] + bh[color] * bh[color]);
               for(float l = 0; l <= sl; l += 0.5)
               {
                 const float d = norm - l;
                 if((-0.01 < d && d < -0.005) || (0 < d && d < 0.01))
                 {
-                  v *= d >= 0 ? 1.75 : 1.5;
-                  v += d > 0 ? 0.2 : 0.075;
+                  val[color] *= d >= 0 ? 1.75 : 1.5;
+                  val[color] += d > 0 ? 0.2 : 0.075;
                 }
               }
             }
 
-            out[(size_t)owidth * outr + outc] = v * v; // gamma = 2.0
-          }
-      }
-
+          for(int color = 0; color < 3; color++)
+            odata[ch * (size_t)owidth * outr + ch * outc + color] = val[color];
+        }
     }
 
-#if CACORRECT_DEBUG
+#if ETHER_DEBUG
   time_end = clock();
-  printf("cacorrect: correct in %f seconds (cpu time)\n",
+  printf("ether: correct in %f seconds (cpu time)\n",
          (float)(time_end - time_start) / CLOCKS_PER_SEC);
 #endif
 
@@ -632,47 +641,32 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
              const float *const in, float *const out,
              const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out)
 {
-  const int iwidth  = roi_in->width;
-  const int owidth  = roi_out->width;
-  const int oheight = roi_out->height;
-  const int offv = roi_out->y - roi_in->y;
-  const int offh = roi_out->x - roi_in->x;
-  for(int r = 0; r < oheight; r++)
-    memcpy(out + (size_t)owidth * r, in + (size_t)iwidth * (r + offv) + offh,
-           sizeof(float) * owidth);
-
-  if(piece->pipe->type != DT_DEV_PIXELPIPE_EXPORT && !get_displayed())
-    if(!dt_control_get_dev_zoom()) return;
-
   CA_correct(self, piece, in, out, roi_in, roi_out);
 }
 
 void reload_defaults(dt_iop_module_t *module)
 {
   // init defaults:
-  dt_iop_cacorrect_params_t p;
-  p.type = 0;
-  memcpy(module->params, &p, sizeof(dt_iop_cacorrect_params_t));
-  memcpy(module->default_params, &p, sizeof(dt_iop_cacorrect_params_t));
+  dt_iop_ether_params_t p;
+  p.cacorrect = 1;
+  p.scaling = 2.;
+  memcpy(module->params, &p, sizeof(dt_iop_ether_params_t));
+  memcpy(module->default_params, &p, sizeof(dt_iop_ether_params_t));
 
-  if(!module->dev) return;
-
-  // can't be switched on for non-raw images:
-  module->hide_enable_button =
-    !dt_image_is_raw(&module->dev->image_storage)
-    || (module->dev->image_storage.filters == 9u);
+  module->hide_enable_button = 1;
+  // (module->dev->image_storage.filters == 9u);
 }
 
 void init(dt_iop_module_t *module)
 {
-  module->params_size = sizeof(dt_iop_cacorrect_params_t);
-  module->params = malloc(sizeof(dt_iop_cacorrect_params_t));
-  module->default_params = malloc(sizeof(dt_iop_cacorrect_params_t));
-  // our module is disabled by default
-  module->default_enabled = 0;
+  module->params_size = sizeof(dt_iop_ether_params_t);
+  module->params = malloc(sizeof(dt_iop_ether_params_t));
+  module->default_params = malloc(sizeof(dt_iop_ether_params_t));
 
-  // we come just before demosaicing.
-  module->priority = 83; // module order created by iop_dependencies.py, do not edit!
+  module->default_enabled = 1;
+
+  // we come instead of demosaicing.
+  module->priority = 140; // module order created by iop_dependencies.py, do not edit!
 }
 
 void cleanup(dt_iop_module_t *module)
@@ -680,11 +674,10 @@ void cleanup(dt_iop_module_t *module)
   free(module->params);
 }
 
-void commit_params(dt_iop_module_t *self, dt_iop_params_t *params, dt_dev_pixelpipe_t *pipe,
-                   dt_dev_pixelpipe_iop_t *piece)
+void commit_params(dt_iop_module_t *self, dt_iop_ether_params_t *p,
+                   dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  dt_iop_cacorrect_data_t *d = piece->data;
-  dt_iop_cacorrect_params_t *p = params;
+  dt_iop_ether_data_t *d = piece->data;
 
   // non raw and preview pipe do not have mosaiced data:
   if(!(pipe->image.flags & DT_IMAGE_RAW)
@@ -702,12 +695,12 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *params, dt_dev_pixelp
   }
 
   // set up parameters
-  d->type = p->type;
-  d->ip = dt_interpolation_new(DT_INTERPOLATION_USERPREF);
-  if(p->type == 1)
+  d->cacorrect = p->cacorrect;
+  d->scaling = p->scaling;
+  if(p->cacorrect == 1)
   {
     int rdegree = get_radial_degree();
-    if(rdegree <= 0) rdegree = 4; // default value
+    if(rdegree <= 0) rdegree = 1; // default value
     d->degree = rdegree; // order of the radial polynomial fit
   }
   else
@@ -720,34 +713,35 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *params, dt_dev_pixelp
 
 void init_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  piece->data = malloc(sizeof(dt_iop_cacorrect_data_t));
-  dt_iop_cacorrect_data_t *d = piece->data;
+  piece->data = malloc(sizeof(dt_iop_ether_data_t));
+  dt_iop_ether_data_t *d = piece->data;
   d->fitdata = NULL;
+  //printf("ether: init_pipe\n");
 }
 
 void cleanup_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
 {
-  dt_iop_cacorrect_data_t *d = piece->data;
+  dt_iop_ether_data_t *d = piece->data;
   if(d->fitdata)
     free(d->fitdata);
   free(piece->data);
   piece->data = NULL;
+  //printf("ether: cleanup_pipe\n");
 }
 
 void gui_update(dt_iop_module_t *self)
 {
-  dt_iop_cacorrect_gui_data_t *g = self->gui_data;
-  dt_iop_cacorrect_params_t *p = (void *)self->params;
-  if(p->type < 0 || p->type > 2) p->type = 0; // compat
-  dt_bauhaus_combobox_set(g->tcombo, p->type);
+  dt_iop_ether_gui_data_t *g = self->gui_data;
+  dt_iop_ether_params_t *p = (void *)self->params;
+  dt_bauhaus_combobox_set(g->tcombo, p->cacorrect);
 }
 
-static void type_changed(GtkWidget *widget, dt_iop_module_t *self)
+static void cacorrect_changed(GtkWidget *widget, dt_iop_module_t *self)
 {
-  dt_iop_cacorrect_gui_data_t *g = self->gui_data;
-  dt_iop_cacorrect_params_t *p = (void *)self->params;
+  dt_iop_ether_gui_data_t *g = self->gui_data;
+  dt_iop_ether_params_t *p = (void *)self->params;
   if(self->dt->gui->reset) return;
-  p->type = dt_bauhaus_combobox_get(g->tcombo);
+  p->cacorrect = dt_bauhaus_combobox_get(g->tcombo);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -756,13 +750,14 @@ void gui_init(dt_iop_module_t *self)
   self->gui_data = malloc(sizeof(dt_iop_cacorrect_gui_data_t));
   dt_iop_cacorrect_gui_data_t *g = self->gui_data;
 
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  self->widget = gtk_vbox_new(DT_BAUHAUS_SPACE);
   g->tcombo = dt_bauhaus_combobox_new(self);
-  dt_bauhaus_widget_set_label(g->tcombo, NULL, _("type"));
+  dt_bauhaus_widget_set_label(g->tcombo, NULL, _("chromatic correction"));
   dt_bauhaus_combobox_clear(g->tcombo);
+  dt_bauhaus_combobox_add(g->tcombo, _("none"));
   dt_bauhaus_combobox_add(g->tcombo, _("generic"));
   dt_bauhaus_combobox_add(g->tcombo, _("radial"));
-  g_signal_connect(G_OBJECT (g->tcombo), "value-changed", G_CALLBACK(type_changed), (gpointer)self);
+  g_signal_connect(G_OBJECT (g->tcombo), "value-changed", G_CALLBACK(cacorrect_changed), (gpointer)self);
   gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo, TRUE, TRUE, 0);
 }
 

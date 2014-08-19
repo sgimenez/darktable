@@ -41,6 +41,7 @@ FILE(GLOB SOURCE_FILES
   "common/imageio_rawspeed.cc"
   "common/import_session.c"
   "common/interpolation.c"
+  "common/maze.c"
   "common/metadata.c"
   "common/mipmap_cache.c"
   "common/noiseprofiles.c"

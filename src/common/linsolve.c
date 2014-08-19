@@ -183,6 +183,98 @@ lin_get2(int d, float *st, float x, float y)
   return v;
 }
 
+static inline float
+lin_get2_mean(int d, float *st, float r)
+{
+  if (d <= 1)
+    return st[0];
+  if (d == 2)
+    return st[0] + 1.0/3.0*(st[2]+st[5])*r*r; // todo: do the math
+  if (d == 3)
+    return st[0] + 1.0/3.0*(st[2]+st[7])*r*r; // todo: do the math
+  return -1;
+}
+
+static inline void
+lin_push2m(
+  int dn, int cn, int d, float *mt, float *vt,
+  int c, float x, float y, float k, float v)
+{
+  mt[c*dn+c] += k;
+  int a = cn;
+  float pmy = 1.0; // pow_m(y)
+  for (int m = 0; m <= d; m++, pmy *= y)
+  {
+    float pnx = 1.0; // pow_n(x)
+    for (int n = 0; n <= d - m; n++, pnx *= x)
+    {
+      if (m == 0 && n == 0) continue;
+      mt[c*dn+a] += k*pmy*pnx;
+      a++;
+    }
+  }
+  vt[c] += k*v;
+
+  int b = cn;
+  float piy = 1.0; // pow_i(y)
+  for (int i = 0; i <= d; i++, piy *= y)
+  {
+    float pjx = 1.0; // pow_j(x)
+    for (int j = 0; j <= d - i; j++, pjx *= x)
+    {
+      if (i == 0 && j == 0) continue;
+      float o = k*piy*pjx;
+      mt[b*dn+c] += o;
+      int a = cn;
+      float pmy = 1.0; // pow_m(y)
+      for (int m = 0; m <= d; m++, pmy *= y)
+      {
+        float pnx = 1.0; // pow_n(x)
+        for (int n = 0; n <= d - m; n++, pnx *= x)
+        {
+          if (m == 0 && n == 0) continue;
+          mt[b*dn+a] += o*pmy*pnx;
+          a++;
+        }
+      }
+      vt[b] += o*v;
+      b++;
+    }
+  }
+}
+
+static inline float
+lin_get2m(int d, int cn, float *st, int c, float x, float y)
+{
+  float v = st[c];
+  int a = cn;
+  float pmy = 1.0; // pow_m(y)
+  for (int m = 0; m <= d; m++, pmy *= y)
+  {
+    float pnx = 1.0; // pow_n(x)
+    for (int n = 0; n <= d - m; n++, pnx *= x)
+    {
+      if (m == 0 && n == 0) continue;
+      v += pmy*pnx*st[a];
+      a++;
+    }
+  }
+  return v;
+}
+
+
+static inline float
+lin_get2m_mean(int d, int cn, float *st, int c, float r)
+{
+  if (d <= 1)
+    return st[c];
+  if (d == 2)
+    return st[c] + 1.0/3.0*(st[cn+1]+st[cn+4])*r*r; // todo: do the math
+  if (d == 3)
+    return st[c] + 1.0/3.0*(st[cn+1]+st[cn+6])*r*r; // todo: do the math
+  return -1;
+}
+
 static inline void
 lin_print(int degn, float *mt, float *vt)
 {

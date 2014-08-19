@@ -33,6 +33,7 @@
 #include "develop/tiling.h"
 #include "common/opencl.h"
 #include "common/interpolation.h"
+#include "common/maze.h"
 #include "control/control.h"
 #include "dtgtk/button.h"
 #include "dtgtk/resetlabel.h"
@@ -41,7 +42,7 @@
 #include "gui/gtk.h"
 #include "gui/draw.h"
 
-#define LENS_DEBUG 0
+#define LENS_DEBUG 1
 
 #if LF_VERSION < ((0 << 24) | (2 << 16) | (9 << 8) | 0)
 #define LF_SEARCH_SORT_AND_UNIQUIFY 2
@@ -354,43 +355,36 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const int moz = LENS_MOZ && (piece->pipe->image.flags & DT_IMAGE_RAW) &&
     !dt_dev_pixelpipe_uses_downsampled_input(piece->pipe);
 
-  const int mask_display = piece->pipe->mask_display;
   const unsigned int ch = moz ? 1 : piece->colors;
   const unsigned int pixelformat =
     moz ? LF_CR_1(INTENSITY) :
     ch == 3 ? LF_CR_3(RED, GREEN, BLUE) : LF_CR_4(RED, GREEN, BLUE, UNKNOWN);
 
-  const struct dt_interpolation* interpolation =
-    dt_interpolation_new(DT_INTERPOLATION_USERPREF);
-
   const int iwidth  = roi_in->width;
   const int iheight = roi_in->height;
+  const float iscale = roi_in->scale;
   const int owidth  = roi_out->width;
   const int oheight = roi_out->height;
+  const float oscale = roi_out->scale;
 
-  const float orig_w = roi_in->scale * piece->iwidth;
-  const float orig_h = roi_in->scale * piece->iheight;
-
-  const int smargin = 0.05 * MIN(orig_w, orig_h);
-  const int margin = smargin + (moz ? 2 : 1) * interpolation->width;
-
-  const int mwidth = 2 * margin + iwidth;
-  const int mheight = 2 * margin + iheight;
+  const float orig_w = iscale * piece->iwidth;
+  const float orig_h = iscale * piece->iheight;
 
 #if LENS_DEBUG
   printf("lens: i.w=%d i.h=%d i.x=%d i.y=%d s=%f\n",
          iwidth, iheight, roi_in->x, roi_in->y, roi_in->scale);
   printf("lens: o.w=%d o.h=%d o.x=%d o.y=%d s=%f\n",
          owidth, oheight, roi_out->x, roi_out->y, roi_out->scale);
-  printf("lens: orig_w=%f orig_h=%f\n", orig_w, orig_h);
+  printf("lens: orig_w=%f orig_h=%f moz=%d\n", orig_w, orig_h, moz);
 #endif
 
   dt_pthread_mutex_lock(&darktable.plugin_threadsafe);
   lfModifier *modifier = lf_modifier_new(d->lens, d->crop, orig_w, orig_h);
   int modflags =
-    lf_modifier_initialize(modifier, d->lens, LF_PF_F32,
-                           d->focal, d->aperture, d->distance, d->scale,
-                           d->target_geom, d->modify_flags, d->inverse);
+    lf_modifier_initialize(
+      modifier, d->lens, LF_PF_F32,
+      d->focal, d->aperture, d->distance, d->scale,
+      d->target_geom, d->modify_flags, d->inverse);
   dt_pthread_mutex_unlock(&darktable.plugin_threadsafe);
 
   const int mod_d = mod_dist(modflags);
@@ -400,27 +394,17 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const int ca = (filters & 3) != 1, fb = (filters >> (!ca << 2) & 3) == 2;
 
   // acquire temp memory for image buffer
-  const size_t req = sizeof(float) * ch * mwidth * mheight;
-  float *tmpbuf = dt_alloc_align(16, req);
+  float *tmpbuf = dt_alloc_align(16, ch * iwidth * iheight * sizeof(float));
+  memcpy(tmpbuf, idata, ch * iwidth * iheight * sizeof(float));
 
 #if LENS_DEBUG
-  printf("start\n");
+  printf("lens: start\n");
 #endif
-
-  // fill tmpbuf with input
-  for(int i = 0; i < ch*mwidth*mheight; i++)
-    tmpbuf[i] = 0./0.; // nan values will be extrapolated
-#ifdef _OPENMP
-//#pragma omp parallel for schedule(static)
-#endif
-  for(int i = 0; i < iheight; i++)
-    for(int j = 0; j < ch * iwidth; j++)
-      tmpbuf[ch * mwidth * (margin + i) + ch * margin + j] = idata[ch * iwidth * i + j];
 
   if(mod_v && !d->inverse)
   {
 #if LENS_DEBUG
-    printf("mod_v\n");
+    printf("lens: vignette\n");
 #endif
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
@@ -428,125 +412,105 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
     for(int y = 0; y < iheight; y++)
     {
       lf_modifier_apply_color_modification(
-        modifier, tmpbuf + ch * mwidth * (margin + y) + ch * margin,
-        roi_in->x, roi_in->y + y,
-        iwidth, 1, pixelformat, iwidth);
+        modifier, tmpbuf + ch*iwidth*y,
+        roi_in->x, roi_in->y + y, iwidth, 1, pixelformat, iwidth);
     }
   }
 
   if(mod_d)
   {
+    maze_image_t img;
+    img.ch = moz ? 3 : ch;
+    img.data = tmpbuf;
+    img.sst = ch;
+    img.lst = ch*iwidth;
+    img.xmin = 0;
+    img.ymin = 0;
+    img.xmax = iwidth;
+    img.ymax = iheight;
+    maze_pattern_t pat;
+    if (moz)
+    {
+      const int patdata[] =
+        {
+          0, 1,
+          1, 2,
+        };
+      const float patquant[] = { 2.0/5.0, 1.0/5.0, 2.0/5.0 };
+      pat.x = 2;
+      pat.y = 2;
+      pat.data = patdata;
+      pat.quant = patquant;
+      pat.offx = !ca & 1;
+      pat.offy = fb & 1;
+    }
+
     // acquire temp memory for image buffer
     const size_t dbuf_req = owidth * 2 * 3 * sizeof(float);
     void *dbuf = dt_alloc_align(16, dbuf_req * dt_get_num_threads());
 
 #if LENS_DEBUG
-    printf("mod_d\n");
+    printf("lens: distortion\n");
 #endif
-    // gamma = 2.0 (experimental)
-    for(int i = 0; i < iheight; i++)
-    {
-      int c = 0;
-      float *p = tmpbuf + ch * mwidth * (margin + i) + ch * margin;
-#if __SSE2__
-      for(; c + 3 < ch * iwidth; p += 4, c += 4)
-        _mm_storeu_ps(p, _mm_sqrt_ps(_mm_loadu_ps(p)));
-#endif
-      for(; c < ch * iwidth; p += 1, c += 1)
-        *p = sqrt(*p);
-    }
-
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
     for(int y = 0; y < oheight; y++)
     {
-      float *pi = (float *)(dbuf + dbuf_req*dt_get_thread_num());
+      float *pi = (float *)(dbuf + dbuf_req * dt_get_thread_num());
       lf_modifier_apply_subpixel_geometry_distortion(
-        modifier, roi_out->x, roi_out->y+y, owidth, 1, pi);
+        modifier, roi_out->x, roi_out->y + y, owidth, 1, pi);
 
       if(moz)
         for(int x = 0; x < owidth; x++, pi += 6)
         {
-          const int ox = (x + roi_out->x - roi_in->x) & 1;
-          const int oy = (y + roi_out->y - roi_in->y) & 1;
           const int color = (x + y + ca) & 1 ? 1 : (x + y + fb) & 1 ? 2 : 0;
-          const float px = pi[2 * color + 0] - roi_in->x;
-          const float py = pi[2 * color + 1] - roi_in->y;
-          const int xmin = 0;
-          const int ymin = 0;
-          const int xmax = iwidth;
-          const int ymax = iheight;
-          float *p = tmpbuf + ch * mwidth * (margin + oy) + ch * (margin + ox);
-          double v = 0.;
-          if(px > xmin-smargin && py > ymin-smargin &&
-              px < xmax+smargin && py < ymax+smargin)
+          float px[3], py[3];
+          for (int i = 0; i < 3; i++)
           {
-            if(color == 1) // interpolate greens diagonally
-            {
-              if(px > xmin+smargin && py > ymin+smargin &&
-                  px < xmax-smargin && py < ymax-smargin) // fixme safety
-              {
-                v = dt_interpolation_compute_extrapolated_sample(
-                  interpolation, p, (px-ox+py-oy)/2, (py-oy-px+ox)/2,
-                  -12000, -12000, 12000, 12000, ch*mwidth+1, ch*mwidth-1);
-              }
-            }
-            else
-            {
-              v = dt_interpolation_compute_extrapolated_sample(
-                interpolation, p, (px - ox) / 2, (py - oy) / 2,
-                (xmin - ox) / 2, (ymin - oy) / 2, (xmax - ox) / 2 - 1, (ymax - oy) / 2 - 1,
-                2, 2 * ch * mwidth);
-            }
+            px[i] = pi[2 * i + 0] - roi_in->x;
+            py[i] = pi[2 * i + 1] - roi_in->y;
           }
-          v = fmax(0., v);
-          odata[ch * owidth * y + ch * x] = v * v; // gamma
+          const float r = 2 / M_PI * iscale / oscale;
+          const float rmax = 3.0;
+          float val[3];
+          if (r > rmax)
+            dt_maze_mosaic_downsample(&img, &pat, r, px, py, val);
+          else
+            dt_maze_mosaic_interpolate(&img, &pat, 2, r, px, py, val);
+          odata[ch * owidth * y + ch * x] = fmaxf(0.0, val[color]);
         }
       else // demosaicaized
-        for(int x = 0; x < owidth; x++, pi += 6)
-          for(int color = 0; color < (mask_display ? 4 : 3); color++)
+        for (int x = 0; x < owidth; x++, pi += 6)
+        {
+          float px[3], py[3];
+          for (int i = 0; i < ch; i++)
           {
-            const int index = color == 3 ? 1 : color;
-            float px = pi[2 * index + 0] - roi_in->x;
-            float py = pi[2 * index + 1] - roi_in->y;
-            const int xmin = 0;
-            const int ymin = 0;
-            const int xmax = iwidth;
-            const int ymax = iheight;
-            double v = 0.;
-            if(px > xmin - smargin && py > ymin - smargin &&
-                px < xmax + smargin && py < ymax + smargin)
-            {
-              float *p = tmpbuf + ch * mwidth * margin + ch * margin + color;
-              v = dt_interpolation_compute_extrapolated_sample(
-                interpolation, p, px, py, xmin, ymin, xmax - 1, ymax - 1,
-                ch, ch * mwidth);
-              /* v = dt_maze_interpolation_extrapolated( */
-                /* p, px, py, xmin, ymin, xmax-1, ymax-1, */
-                /* ch, ch*mwidth); */
-            }
-            v = fmax(0., v);
-            odata[ch * owidth * y + ch * x + color] = v * v;
+            const int index = i > 2 ? 1 : i;
+            px[i] = pi[2 * index + 0] - roi_in->x;
+            py[i] = pi[2 * index + 1] - roi_in->y;
           }
+          float val[3];
+          const int degree = 2;
+          const float margin = 10*iscale;
+          const float r = 2/M_PI*iscale/oscale;
+          dt_maze_interpolate(&img, degree, margin, r, px, py, val);
+          for (int i = 0; i < ch; i++)
+            odata[ch*owidth*y+ch*x+i] = fmaxf(0.0, val[i]);
+        }
     }
 
     dt_free_align(dbuf);
   }
   else
-#ifdef _OPENMP
-//#pragma omp parallel for schedule(static)
-#endif
-    for(int i = 0; i < oheight; i++)
-      for(int j = 0; j < ch * owidth; j++)
-        odata[ch * owidth * i + j] = tmpbuf[ch * mwidth * (margin + i) + ch * margin + j];
+    memcpy(odata, tmpbuf, ch * iwidth * iheight * sizeof(float));
 
   dt_free_align(tmpbuf);
 
   if(mod_v && d->inverse)
   {
 #if LENS_DEBUG
-    printf("mod_v\n");
+    printf("lens: vignette\n");
 #endif
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
@@ -560,7 +524,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   }
 
 #if LENS_DEBUG
-  printf("end\n");
+  printf("lens: end\n");
 #endif
 
   lf_modifier_destroy(modifier);
@@ -578,14 +542,15 @@ void tiling_callback(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
                      const dt_iop_roi_t *roi_in, const dt_iop_roi_t *roi_out,
                      dt_develop_tiling_t *tiling)
 {
-  const struct dt_interpolation* interpolation = dt_interpolation_new(DT_INTERPOLATION_USERPREF);
+  const int moz = LENS_MOZ && (piece->pipe->image.flags & DT_IMAGE_RAW) &&
+    !dt_dev_pixelpipe_uses_downsampled_input(piece->pipe);
 
-  tiling->factor = 4.5f; // in + out + tmp + tmpbuf
+  tiling->factor = 3.5f;  // in + out + tmpbuf
   tiling->maxbuf = 1.5f;
   tiling->overhead = 0;
-  tiling->overlap = interpolation->width;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->overlap = 0;
+  tiling->xalign = moz ? 2 : 1;
+  tiling->yalign = moz ? 2 : 1;
   return;
 }
 
@@ -664,12 +629,18 @@ void modify_roi_in(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   const float orig_w = roi_in->scale*piece->iwidth;
   const float orig_h = roi_in->scale*piece->iheight;
 
+  const int moz = LENS_MOZ && (piece->pipe->image.flags & DT_IMAGE_RAW) &&
+    !dt_dev_pixelpipe_uses_downsampled_input(piece->pipe);
+
+  const int imargin = moz ? 12 : 8;
+
   lfModifier *modifier = lf_modifier_new(d->lens, d->crop, orig_w, orig_h);
 
   float xm = FLT_MAX, xM = -FLT_MAX, ym = FLT_MAX, yM = -FLT_MAX;
 
   int modflags = lf_modifier_initialize(modifier, d->lens, LF_PF_F32, d->focal, d->aperture, d->distance,
                                         d->scale, d->target_geom, d->modify_flags, d->inverse);
+  // todo: extend input area
 
   if(mod_dist(modflags))
   {
@@ -695,10 +666,10 @@ void modify_roi_in(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
     }
     dt_free_align(dbuf);
 
-    roi_in->x = floor(fmaxf(0.0f, xm));
-    roi_in->y = floor(fmaxf(0.0f, ym));
-    roi_in->width = ceil(fminf(orig_w, xM)) - roi_in->x;
-    roi_in->height = ceil(fminf(orig_h, yM)) - roi_in->y;
+    roi_in->x = floor(fmaxf(0.0f, xm - imargin));
+    roi_in->y = floor(fmaxf(0.0f, ym - imargin));
+    roi_in->width = ceil(fminf(orig_w, xM + imargin)) - roi_in->x;
+    roi_in->height = ceil(fminf(orig_h, yM + imargin)) - roi_in->y;
   }
   lf_modifier_destroy(modifier);
 }
@@ -918,7 +889,7 @@ void init(dt_iop_module_t *module)
   module->params_size = sizeof(dt_iop_lensfun_params_t);
   module->gui_data = NULL;
 #if LENS_MOZ
-  module->priority = 60; // changed
+  module->priority = 130; // changed
 #else
   module->priority = 170; // changed
 #endif
