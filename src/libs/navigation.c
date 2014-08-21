@@ -363,6 +363,7 @@ void _lib_navigation_set_position(dt_lib_module_t *self, double x, double y, int
 
     /* redraw pipe */
     dt_dev_invalidate(darktable.develop);
+    darktable.develop->image_status = DT_DEV_PIXELPIPE_PAUSED;
     dt_control_queue_redraw_center();
   }
 }
@@ -494,6 +495,13 @@ static gboolean _lib_navigation_button_release_callback(GtkWidget *widget, GdkEv
 {
   dt_lib_module_t *self = (dt_lib_module_t *)user_data;
   dt_lib_navigation_t *d = (dt_lib_navigation_t *)self->data;
+
+  if (darktable.develop->image_status == DT_DEV_PIXELPIPE_PAUSED)
+  {
+    darktable.develop->image_status = DT_DEV_PIXELPIPE_DIRTY;
+    dt_control_queue_redraw_center();
+  }
+
   d->dragging = 0;
 
   return TRUE;
