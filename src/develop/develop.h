@@ -62,7 +62,8 @@ typedef enum dt_dev_pixelpipe_status_t
   DT_DEV_PIXELPIPE_DIRTY = 0,   // history stack changed or image new
   DT_DEV_PIXELPIPE_RUNNING = 1, // pixelpipe is running
   DT_DEV_PIXELPIPE_VALID = 2,   // pixelpipe has finished; valid result
-  DT_DEV_PIXELPIPE_INVALID = 3  // pixelpipe has finished; invalid result
+  DT_DEV_PIXELPIPE_INVALID = 3,  // pixelpipe has finished; invalid result
+  DT_DEV_PIXELPIPE_PAUSED = 4	// pixelpipe temporarily paused
 } dt_dev_pixelpipe_status_t;
 
 extern const gchar *dt_dev_histogram_type_names[];

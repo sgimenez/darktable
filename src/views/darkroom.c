@@ -128,9 +128,10 @@ void expose(
     dev->gui_synch = 0;
   }
 
-  if(dev->image_status == DT_DEV_PIXELPIPE_DIRTY || dev->image_status == DT_DEV_PIXELPIPE_INVALID
-     || dev->pipe->input_timestamp < dev->preview_pipe->input_timestamp)
-    dt_dev_process_image(dev);
+  if (dev->image_status != DT_DEV_PIXELPIPE_PAUSED)
+    if(dev->image_status == DT_DEV_PIXELPIPE_DIRTY || dev->image_status == DT_DEV_PIXELPIPE_INVALID
+       || dev->pipe->input_timestamp < dev->preview_pipe->input_timestamp)
+      dt_dev_process_image(dev);
   if(dev->preview_status == DT_DEV_PIXELPIPE_DIRTY || dev->preview_status == DT_DEV_PIXELPIPE_INVALID
      || dev->pipe->input_timestamp > dev->preview_pipe->input_timestamp)
     dt_dev_process_preview(dev);
@@ -1438,6 +1439,7 @@ void mouse_moved(dt_view_t *self, double x, double y, double pressure, int which
     ctl->button_x = x - offx;
     ctl->button_y = y - offy;
     dt_dev_invalidate(dev);
+    dev->image_status = DT_DEV_PIXELPIPE_PAUSED;
     dt_control_queue_redraw();
   }
 }
@@ -1463,6 +1465,11 @@ int button_released(dt_view_t *self, double x, double y, int which, uint32_t sta
     handled = dev->gui_module->button_released(dev->gui_module, x, y, which, state);
   if(handled) return handled;
   if(which == 1) dt_control_change_cursor(GDK_LEFT_PTR);
+  if (dev->image_status == DT_DEV_PIXELPIPE_PAUSED)
+  {
+    dev->image_status = DT_DEV_PIXELPIPE_DIRTY;
+    dt_control_queue_redraw();
+  }
   return 1;
 }
 
