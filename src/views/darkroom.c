@@ -1538,14 +1538,9 @@ int button_pressed(dt_view_t *self, double x, double y, double pressure, int whi
     zoom_y += (1.0 / scale) * (y - .5f * dev->height) / proch;
     if(zoom == DT_ZOOM_1)
     {
-      if(!closeup)
-        closeup = 1;
-      else
-      {
-        zoom = DT_ZOOM_FIT;
-        zoom_x = zoom_y = 0.0f;
-        closeup = 0;
-      }
+      zoom = DT_ZOOM_FIT;
+      zoom_x = zoom_y = 0.0f;
+      closeup = 0;
     }
     else
       zoom = DT_ZOOM_1;
@@ -1593,50 +1588,28 @@ void scrolled(dt_view_t *self, double x, double y, int up, int state)
   const float fitscale = dt_dev_get_zoom_scale(dev, DT_ZOOM_FIT, 1.0, 0);
   float oldscale = scale;
 
-  // offset from center now (current zoom_{x,y} points there)
-  float mouse_off_x = x - .5 * dev->width, mouse_off_y = y - .5 * dev->height;
-  zoom_x += mouse_off_x / (procw * scale);
-  zoom_y += mouse_off_y / (proch * scale);
   zoom = DT_ZOOM_FREE;
   closeup = 0;
-  if(up)
-  {
-    if(scale == 1.0f && !((state & GDK_CONTROL_MASK) == GDK_CONTROL_MASK)) return;
-    if(scale >= 2.0f)
-      return;
-    else if(scale < fitscale)
-      scale += .05f * (1.0f - fitscale);
-    else
-      scale += .1f * (1.0f - fitscale);
-  }
-  else
-  {
-    if(scale == fitscale && !((state & GDK_CONTROL_MASK) == GDK_CONTROL_MASK))
-      return;
-    else if(scale < 0.5 * fitscale)
-      return;
-    else if(scale <= fitscale)
-      scale -= .05f * (1.0f - fitscale);
-    else
-      scale -= .1f * (1.0f - fitscale);
-  }
-  // we want to be sure to stop at 1:1 and FIT levels
-  if((scale - 1.0) * (oldscale - 1.0) < 0) scale = 1.0f;
-  if((scale - fitscale) * (oldscale - fitscale) < 0) scale = fitscale;
-  scale = fmaxf(fminf(scale, 2.0f), 0.5 * fitscale);
 
-  // for 200% zoom we want pixel doubling instead of interpolation
-  if(scale > 1.9999f)
-  {
-    scale = 1.0f; // don't interpolate
-    closeup = 1;  // enable closeup mode (pixel doubling)
-  }
+  if(up)
+    scale *= exp(log(2.0f) / 2.); // doubling in two steps
+  else
+    scale /= exp(log(2.0f) / 2.);
+
+  // be sure to stop at 1:1 and FIT levels
+  // if (scale > 1.0f && oldscale <= 1.0f) scale = 1.0f;
+  if (scale < fitscale && oldscale >= fitscale) scale = fitscale;
+  scale = fmaxf(fminf(scale, 8.0f), 0.125 * fitscale);
+
+  if (oldscale == scale) return;
 
   dt_control_set_dev_zoom_scale(scale);
-  if(fabsf(scale - 1.0f) < 0.001f) zoom = DT_ZOOM_1;
-  if(fabsf(scale - fitscale) < 0.001f) zoom = DT_ZOOM_FIT;
-  zoom_x -= mouse_off_x / (procw * scale);
-  zoom_y -= mouse_off_y / (proch * scale);
+  if (fabsf(scale - 1.0f) < 0.001f)
+    zoom = DT_ZOOM_1;
+  if (fabsf(scale - fitscale) < 0.001f)
+    zoom = DT_ZOOM_FIT;
+  zoom_x += (x - dev->width / 2.0) / procw * (1 / oldscale - 1 / scale);
+  zoom_y += (y - dev->height / 2.0) / proch * (1 / oldscale - 1 / scale);
   dt_dev_check_zoom_bounds(dev, &zoom_x, &zoom_y, zoom, closeup, NULL, NULL);
   dt_control_set_dev_zoom(zoom);
   dt_control_set_dev_closeup(closeup);
@@ -1644,7 +1617,6 @@ void scrolled(dt_view_t *self, double x, double y, int up, int state)
   dt_control_set_dev_zoom_y(zoom_y);
 
   dt_dev_invalidate(dev);
-
   dt_control_queue_redraw();
 }
 
