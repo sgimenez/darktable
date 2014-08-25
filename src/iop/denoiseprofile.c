@@ -377,35 +377,18 @@ void process_wavelets(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piec
   // now do everything backwards, so the result will end up in *ovoid
   for(int scale = max_scale - 1; scale >= 0; scale--)
   {
-#if 1
-    // variance stabilizing transform maps sigma to unity.
-    const float sigma = 1.0f;
-    // it is then transformed by wavelet scales via the 5 tap a-trous filter:
-    const float varf = sqrtf(2.0f + 2.0f * 4.0f * 4.0f + 6.0f * 6.0f) / 16.0f; // about 0.5
-    const float sigma_band = powf(varf, scale) * sigma;
-    // determine thrs as bayesshrink
-    // TODO: parallelize!
     float sum_y2[3] = { 0.0f };
     for(size_t k = 0; k < npixels; k++)
       for(int c = 0; c < 3; c++) sum_y2[c] += buf[scale][4 * k + c] * buf[scale][4 * k + c];
 
-    const float sb2 = sigma_band * sigma_band;
-    const float var_y[3] = { sum_y2[0] / (npixels - 1.0f), sum_y2[1] / (npixels - 1.0f), sum_y2[2] / (npixels - 1.0f) };
-    const float std_x[3] = { sqrtf(MAX(1e-6f, var_y[0] - sb2)), sqrtf(MAX(1e-6f, var_y[1] - sb2)),
-                             sqrtf(MAX(1e-6f, var_y[2] - sb2)) };
-    // add 8.0 here because it seemed a little weak
-    const float adjt = 8.0f;
-    const float thrs[4] = { adjt * sb2 / std_x[0], adjt * sb2 / std_x[1], adjt * sb2 / std_x[2], 0.0f };
-// const float std = (std_x[0] + std_x[1] + std_x[2])/3.0f;
-// const float thrs[4] = { adjt*sigma*sigma/std, adjt*sigma*sigma/std, adjt*sigma*sigma/std, 0.0f};
-// fprintf(stderr, "scale %d thrs %f %f %f = %f / %f %f %f \n", scale, thrs[0], thrs[1], thrs[2], sb2,
-// std_x[0], std_x[1], std_x[2]);
-#endif
+    const float var_y[3] = { sum_y2[0]/npixels, sum_y2[1]/npixels, sum_y2[2]/npixels };
+
+    const float thrs[4] =  { sqrt(var_y[0]), sqrt(var_y[1]), sqrt(var_y[2]), 0.0f };
     const float boost[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    // const float thrs[4] = { 0.0, 0.0, 0.0, 0.0 };
+
+    fprintf(stderr, "denoise: scale %d thrs %f %f %f\n", scale, thrs[0], thrs[1], thrs[2]);
+
     eaw_synthesize(buf2, buf1, buf[scale], thrs, boost, width, height);
-    // DEBUG: clean out temporary memory:
-    // memset(buf1, 0, sizeof(float)*4*width*height);
 
     float *buf3 = buf2;
     buf2 = buf1;
