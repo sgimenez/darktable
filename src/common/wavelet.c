@@ -200,8 +200,10 @@ static void
 eaw_synthesize (float *const out, const float *const in, const float *const detail,
                 const float *thrsf, const float *boostf, const int32_t width, const int32_t height)
 {
-  const __m128 threshold = _mm_set_ps(thrsf[3], thrsf[2], thrsf[1], thrsf[0]);
+  const __m128 threshold = _mm_set_ps(2*thrsf[3], 2*thrsf[2], 2*thrsf[1], 2*thrsf[0]);
   const __m128 boost     = _mm_set_ps(boostf[3], boostf[2], boostf[1], boostf[0]);
+
+  const __m128 threshold2 = _mm_mul_ps(threshold, threshold);
 
 #ifdef _OPENMP
   #pragma omp parallel for default(none) schedule(static)
@@ -214,14 +216,11 @@ eaw_synthesize (float *const out, const float *const in, const float *const deta
     float *pout = out + (size_t)4*j*width;
     for(int i=0; i<width; i++)
     {
-#if 1
-      const __m128i maski = _mm_set1_epi32(0x80000000u);
-      const __m128 *mask = (__m128*)&maski;
-      const __m128 absamt = _mm_max_ps(_mm_setzero_ps(), _mm_sub_ps(_mm_andnot_ps(*mask, *pdetail), threshold));
-      const __m128 amount = _mm_or_ps(_mm_and_ps(*pdetail, *mask), absamt);
+      const __m128 v2 = _mm_mul_ps(*pdetail, *pdetail);
+      const __m128 v3 = _mm_mul_ps(v2, *pdetail);
+      const __m128 val = _mm_div_ps(v3, _mm_add_ps(v2, threshold2));
+      const __m128 amount = _mm_and_ps(_mm_cmpord_ps(val, val), val);
       _mm_stream_ps(pout, _mm_add_ps(*pin, _mm_mul_ps(boost, amount)));
-#endif
-      // _mm_stream_ps(pout, _mm_add_ps(*pin, *pdetail));
       pdetail ++;
       pin ++;
       pout += 4;
