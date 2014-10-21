@@ -26,7 +26,7 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 #include <ctype.h>
-#include <lensfun.h>
+#include <lensfun/lensfun.h>
 #include "develop/develop.h"
 #include "develop/imageop.h"
 #include "develop/tiling.h"
