@@ -106,11 +106,76 @@ dt_maze_mosaic_downsample(
   }
 }
 
-float dt_maze_p(float rsrc, float rdst, float d2)
+// bilinear convolution
+float dt_maze_d2_approx(float rsrc, float rdst, float dx, float dy)
 {
   float r = rsrc + rdst;
-  float r2 = r * r;
-  return fmax(1.0f - d2 / r2, 0.0f);
+  float fx = fmax(1.0f - fabs(dx) / r, 0.0f);
+  float fy = fmax(1.0f - fabs(dy) / r, 0.0f);
+  return fx * fy;
+}
+
+// todo: correct bilinear convolution
+float dt_maze_d1(float r1, float r2, float du)
+{
+  float r = 0.0f;
+  float p1 = -du/2;
+  float p2 = +du/2;
+  {
+    float ub = fmax(p1 - r1, p2 - r2);
+    float ue = fmin(p1, p2);
+    float v1 = r1 - p1;
+    float v2 = r2 - p2;
+    if (ub < ue)
+    {
+      r += (ue * ue * ue - ub * ub * ub) / 3
+        + (+ v1 + v2) * (ue * ue - ub * ub) / 2
+        + v1 * v2 * (ue - ub);
+    }
+  }
+  {
+    float ub = fmax(p1 - r1, p2);
+    float ue = fmin(p1, p2 + r2);
+    float v1 = r1 - p1;
+    float v2 = r2 + p2;
+    if (ub < ue)
+    {
+      r += - (ue * ue * ue - ub * ub * ub) / 3
+        + (- v1 + v2) * (ue * ue - ub * ub) / 2
+        + v1 * v2 * (ue - ub);
+    }
+  }
+  {
+    float ub = fmax(p1, p2 - r2);
+    float ue = fmin(p1 + r1, p2);
+    float v1 = r1 + p1;
+    float v2 = r2 - p2;
+    if (ub < ue)
+    {
+      r += - (ue * ue * ue - ub * ub * ub) / 3
+        + (+ v1 - v2) * (ue * ue - ub * ub) / 2
+        + v1 * v2 * (ue - ub);
+    }
+  }
+  {
+    float ub = fmax(p1, p2);
+    float ue = fmin(p1 + r1, p2 + r2);
+    float v1 = r1 + p1;
+    float v2 = r2 + p2;
+    if (ub < ue)
+    {
+      r += (ue * ue * ue - ub * ub * ub) / 3
+        + (- v1 - v2) * (ue * ue - ub * ub) / 2
+        + v1 * v2 * (ue - ub);
+    }
+  }
+  return r;
+}
+
+// todo: correct bilinear convolution
+float dt_maze_d2(float rsrc, float rdst, float dx, float dy)
+{
+  return dt_maze_d1(rsrc, rdst, dx) * dt_maze_d1(rsrc, rdst, dy);
 }
 
 void
@@ -129,7 +194,10 @@ dt_maze_mosaic_deconvolve(
 
   for(int ix = src->xmin; ix < src->xmax; ix++)
     for(int iy = src->ymin; iy < src->ymax; iy++)
+    {
       buf->data[iy * buf->lst + ix * buf->sst] = 0.0f;
+      buf->data[iy * buf->lst + ix * buf->sst + 1] = 0.0f;
+    }
 
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
@@ -156,10 +224,10 @@ dt_maze_mosaic_deconvolve(
             {
               float dx = ix - tx[l];
               float dy = iy - ty[l];
-              float d2 = dx * dx + dy * dy;
-              buf->data[iy * buf->lst + ix * buf->sst] +=
-                dt_maze_p(rsrc[l], rdst[l], d2) *
-                dst->data[jy * dst->lst + jx * dst->sst + l];
+              float *c = buf->data + iy * buf->lst + ix * buf->sst;
+              float k = dt_maze_d2(rsrc[l], rdst[l], dx, dy);
+              c[0] += k * dst->data[jy * dst->lst + jx * dst->sst + l];
+              c[1] += k;
             }
         }
     }
@@ -172,9 +240,13 @@ dt_maze_mosaic_deconvolve(
     {
       float *tx = shift->data + jy * shift->lst + jx * shift->sst + 0;
       float *ty = shift->data + jy * shift->lst + jx * shift->sst + src->ch;
-      float k[src->ch];
+      float f[src->ch];
+      float fn[src->ch];
       for(int l = 0; l < src->ch; l++)
-        k[l] = 0.0f;
+      {
+        f[l] = 0.0f;
+        fn[l] = 0.0f;
+      }
       for(int px = 0; px < pat->x; px++)
         for(int py = 0; py < pat->y; py++)
         {
@@ -192,21 +264,17 @@ dt_maze_mosaic_deconvolve(
             {
               float dx = ix - tx[l];
               float dy = iy - ty[l];
-              float d2 = dx * dx + dy * dy;
-              k[l] += src->data[iy * src->lst + ix * src->sst]
-                / buf->data[iy * buf->lst + ix * buf->sst]
-                * dt_maze_p(rsrc[l], rdst[l], d2);
+              float *c = buf->data + iy * buf->lst + ix * buf->sst;
+              float k = dt_maze_d2(rsrc[l], rdst[l], dx, dy);
+              f[l] += k * src->data[iy * src->lst + ix * src->sst] / c[0] * c[1];
+              fn[l] += k;
             }
         }
-      /* k[0]*=4; */
-      /* k[1]*=2; */
-      /* k[2]*=4; */
-      float ka = (k[0]*4 +  k[1]*2 + k[2]*4)/3;
       for(int l = 0; l < src->ch; l++)
-      {
-        dst->data[jy * dst->lst + jx * dst->sst + l] *= ka;//[l];
-        /* printf("%f %f %f\n",k[0],k[1],k[2]); */
-      }
+        f[l] /= fn[l];
+      /* float fa = (f[0] + f[1] + f[2])/3; */
+      for(int l = 0; l < src->ch; l++)
+        dst->data[jy * dst->lst + jx * dst->sst + l] *= f[l];
     }
 }
 

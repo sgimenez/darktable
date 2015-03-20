@@ -261,7 +261,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
           const float x = (2 * (inc + 0.5) - iwidth) / isize;
 
           // compute variation map
-          float t[2][2*sl+1][2*sl+1];
+          float t[2][2 * sl+1][2 * sl + 1];
           for(int color = 0; color < 2; color++)
             for(int i = 0; i < 2 * sl + 1; i++)
               for(int j = 0; j < 2 * sl + 1; j++)
@@ -373,7 +373,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
             const int rad = 6;
             const int outr = (inr + iy + 0.5) * oscale - 0.5 - oy;
             const int outc = (inc + ix + 0.5) * oscale - 0.5 - ox;
-            float *outp = odata + (size_t)owidth*outr + outc;
+            float *outp = odata + (size_t)owidth * outr + outc;
             if(outr >= rad && outr < oheight - rad &&
                 outc >= rad && outc < owidth - rad)
             {
@@ -556,10 +556,10 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   pat.offy = fb & 1;
 
   maze_image_t buf;
-  buf.ch = 3;
-  buf.data = malloc(iwidth*iheight*sizeof(float));
-  buf.sst = 1;
-  buf.lst = iwidth;
+  buf.ch = 2;
+  buf.data = malloc(2*iwidth*iheight*sizeof(float));
+  buf.sst = 2;
+  buf.lst = 2*iwidth;
   buf.xmin = 0;
   buf.ymin = 0;
   buf.xmax = iwidth;
@@ -674,9 +674,9 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
   printf("ether: deconvolve\n");
 
-  float r = 0.90;
+  float r = 1.0;
   float rsrc[3] = { 2.0f*r, sqrt(2.0f)*r, 2.0f*r };
-  float rdst[3] = { 1.0f*r / oscale, 1.0f*r / oscale, 1.0f*r / oscale };
+  float rdst[3] = { 1.0f / oscale, 1.0f / oscale, 1.0f / oscale };
   for(int k = 0; k < d->ideconv; k++)
     dt_maze_mosaic_deconvolve(&img, &pat, &buf, &shift, &dst, rsrc, rdst);
 
@@ -867,6 +867,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_combobox_add(g->tcombo3, _("1"));
   dt_bauhaus_combobox_add(g->tcombo3, _("2"));
   dt_bauhaus_combobox_add(g->tcombo3, _("3"));
+  dt_bauhaus_combobox_add(g->tcombo3, _("4"));
   g_signal_connect(G_OBJECT(g->tcombo3), "value-changed", G_CALLBACK(ipass_changed), (gpointer)self);
   gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo3, TRUE, TRUE, 0);
 
@@ -877,6 +878,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_combobox_add(g->tcombo4, _("1"));
   dt_bauhaus_combobox_add(g->tcombo4, _("2"));
   dt_bauhaus_combobox_add(g->tcombo4, _("3"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("4"));
   g_signal_connect(G_OBJECT(g->tcombo4), "value-changed", G_CALLBACK(ideconv_changed), (gpointer)self);
   gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo4, TRUE, TRUE, 0);
 
