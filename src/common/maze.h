@@ -50,6 +50,14 @@ dt_maze_interpolate(
   float *val);
 
 void
+dt_maze_mosaic_closest(
+  const maze_image_t *img,
+  const maze_pattern_t *pat,
+  const float *x,
+  const float *y,
+  float *val);
+
+void
 dt_maze_mosaic_interpolate(
   const maze_image_t *img,
   const maze_pattern_t *pat,
@@ -67,5 +75,15 @@ dt_maze_mosaic_downsample(
   const float *x,
   const float *y,
   float *val);
+
+void
+dt_maze_mosaic_deconvolve(
+  const maze_image_t *src,
+  const maze_pattern_t *pat,
+  const maze_image_t *buf,
+  const maze_image_t *shift,
+  const maze_image_t *dst,
+  const float *const rsrc,
+  const float *const rdst);
 
 #endif

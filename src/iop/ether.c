@@ -548,6 +548,36 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   pat.offx = !ca & 1;
   pat.offy = fb & 1;
 
+  maze_image_t buf;
+  buf.ch = 3;
+  buf.data = malloc(iwidth*iheight*sizeof(float));
+  buf.sst = 1;
+  buf.lst = iwidth;
+  buf.xmin = 0;
+  buf.ymin = 0;
+  buf.xmax = iwidth;
+  buf.ymax = iheight;
+
+  maze_image_t shift;
+  shift.ch = 6;
+  shift.data = malloc(6*owidth*oheight*sizeof(float));
+  shift.sst = 6;
+  shift.lst = 6*owidth;
+  shift.xmin = 0;
+  shift.ymin = 0;
+  shift.xmax = owidth;
+  shift.ymax = oheight;
+
+  maze_image_t dst;
+  dst.ch = ch;
+  dst.data = (float *)odata;
+  dst.sst = ch;
+  dst.lst = ch*owidth;
+  dst.xmin = 0;
+  dst.ymin = 0;
+  dst.xmax = owidth;
+  dst.ymax = oheight;
+
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -595,6 +625,12 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
             bv[color] = ir + CLAMPS(bc[color][0], -sl, sl);
             bh[color] = ic + CLAMPS(bc[color][1], -sl, sl);
           }
+          shift.data[outr * shift.lst + outc * shift.sst + 0] = bh[0];
+          shift.data[outr * shift.lst + outc * shift.sst + 1] = bh[1];
+          shift.data[outr * shift.lst + outc * shift.sst + 2] = bh[2];
+          shift.data[outr * shift.lst + outc * shift.sst + 3] = bv[0];
+          shift.data[outr * shift.lst + outc * shift.sst + 4] = bv[1];
+          shift.data[outr * shift.lst + outc * shift.sst + 5] = bv[2];
 
           // shift by interpolation
           float val[3];
@@ -604,6 +640,7 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
             dt_maze_mosaic_downsample(&img, &pat, r, bh, bv, val);
           else
             dt_maze_mosaic_interpolate(&img, &pat, 2, r, bh, bv, val);
+          /* dt_maze_mosaic_closest(&img, &pat, bh, bv, val); */
           for(int color = 0; color < 3; color += 2)
             val[color] = fmaxf(0.0, val[color]);
 
@@ -628,6 +665,16 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
             odata[ch * (size_t)owidth * outr + ch * outc + color] = val[color];
         }
     }
+
+  printf("ether: deconvolve\n");
+  float r = 0.90;
+  float rsrc[3] = { 2.0f*r, sqrt(2.0f)*r, 2.0f*r };
+  float rdst[3] = { 1.0f*r, 1.0f*r, 1.0f*r };
+  for(int k = 0; k < 3; k++)
+    dt_maze_mosaic_deconvolve(&img, &pat, &buf, &shift, &dst, rsrc, rdst);
+
+  free(buf.data);
+  free(shift.data);
 
 #if ETHER_DEBUG
   time_end = clock();
@@ -747,10 +794,10 @@ static void cacorrect_changed(GtkWidget *widget, dt_iop_module_t *self)
 
 void gui_init(dt_iop_module_t *self)
 {
-  self->gui_data = malloc(sizeof(dt_iop_cacorrect_gui_data_t));
-  dt_iop_cacorrect_gui_data_t *g = self->gui_data;
+  self->gui_data = malloc(sizeof(dt_iop_ether_gui_data_t));
+  dt_iop_ether_gui_data_t *g = self->gui_data;
 
-  self->widget = gtk_vbox_new(DT_BAUHAUS_SPACE);
+  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
   g->tcombo = dt_bauhaus_combobox_new(self);
   dt_bauhaus_widget_set_label(g->tcombo, NULL, _("chromatic correction"));
   dt_bauhaus_combobox_clear(g->tcombo);

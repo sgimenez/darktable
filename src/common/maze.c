@@ -32,6 +32,39 @@ static inline float envelop(float x, float r)
   return (1 - x/r)*(1 - x/r);
 }
 
+void
+dt_maze_mosaic_closest(
+  const maze_image_t *img,
+  const maze_pattern_t *pat,
+  const float *x,
+  const float *y,
+  float *val)
+{
+  for (int ch = 0; ch < img->ch; ch++)
+  {
+    const int bx = MAX(floor(x[ch] - pat->x) + 1, img->xmin);
+    const int by = MAX(floor(y[ch] - pat->y) + 1, img->ymin);
+    const int ex = MIN(ceil(x[ch] + pat->x), img->xmax);
+    const int ey = MIN(ceil(y[ch] + pat->y), img->ymax);
+    for (int sx = bx; sx < ex; sx++)
+      for (int sy = by; sy < ey; sy++)
+      {
+        float d2 = pat->x * pat->x + pat->y * pat->y + 1;
+        int i = pat->x*((pat->offy+sy)%pat->y)+(pat->offx+sx)%pat->x;
+        if (pat->data[i] == ch)
+        {
+          float dx = x[ch] - sx;
+          float dy = y[ch] - sy;
+          float dd2 = dx * dx + dy * dy;
+          if (dd2 < d2)
+          {
+            d2 = dd2;
+            val[ch] = img->data[img->lst * sy + img->sst * sx];
+          }
+        }
+      }
+  }
+}
 
 // todo: integrate this to interpolate
 void
@@ -72,6 +105,109 @@ dt_maze_mosaic_downsample(
   }
 }
 
+float dt_maze_p(float rsrc, float rdst, float d2)
+{
+  float r = rsrc + rdst;
+  float r2 = r * r;
+  return fmax(1.0f - d2 / r2, 0.0f);
+}
+
+void
+dt_maze_mosaic_deconvolve(
+  const maze_image_t *src,
+  const maze_pattern_t *pat,
+  const maze_image_t *buf,
+  const maze_image_t *shift,
+  const maze_image_t *dst,
+  const float *const rsrc,
+  const float *const rdst)
+{
+  float r[3];
+  for(int l = 0; l < src->ch; l++)
+    r[l] = rsrc[l] + rdst[l];
+
+  for(int ix = src->xmin; ix < src->xmax; ix++)
+    for(int iy = src->ymin; iy < src->ymax; iy++)
+      buf->data[iy * buf->lst + ix * buf->sst] = 0.0f;
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+  for(int jx = dst->xmin; jx < dst->xmax; jx++)
+    for(int jy = dst->ymin; jy < dst->ymax; jy++)
+    {
+      float *tx = shift->data + jy * shift->lst + jx * shift->sst + 0;
+      float *ty = shift->data + jy * shift->lst + jx * shift->sst + src->ch;
+      for(int px = 0; px < pat->x; px++)
+        for(int py = 0; py < pat->y; py++)
+        {
+          int l = pat->data[py*pat->x + px];
+          int xb = MAX(src->xmin, tx[l] - r[l]);
+          int xe = MIN(src->xmax, tx[l] + r[l] + 1);
+          int yb = MAX(src->ymin, ty[l] - r[l]);
+          int ye = MIN(src->ymax, ty[l] + r[l] + 1);
+          int xo = (px - xb - pat->offx)%pat->x;
+          int yo = (py - yb - pat->offy)%pat->y;
+          if (xo < 0) xo += pat->x;
+          if (yo < 0) yo += pat->y;
+          for(int ix = xb + xo; ix < xe; ix += pat->x)
+            for(int iy = yb + yo; iy < ye; iy += pat->y)
+            {
+              float dx = ix - tx[l];
+              float dy = iy - ty[l];
+              float d2 = dx * dx + dy * dy;
+              buf->data[iy * buf->lst + ix * buf->sst] +=
+                dt_maze_p(rsrc[l], rdst[l], d2) *
+                dst->data[jy * dst->lst + jx * dst->sst + l];
+            }
+        }
+    }
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+  for(int jx = dst->xmin; jx < dst->xmax; jx++)
+    for(int jy = dst->ymin; jy < dst->ymax; jy++)
+    {
+      float *tx = shift->data + jy * shift->lst + jx * shift->sst + 0;
+      float *ty = shift->data + jy * shift->lst + jx * shift->sst + src->ch;
+      float k[src->ch];
+      for(int l = 0; l < src->ch; l++)
+        k[l] = 0.0f;
+      for(int px = 0; px < pat->x; px++)
+        for(int py = 0; py < pat->y; py++)
+        {
+          int l = pat->data[py*pat->x + px];
+          int xb = MAX(src->xmin, tx[l] - r[l]);
+          int xe = MIN(src->xmax, tx[l] + r[l] + 1);
+          int yb = MAX(src->ymin, ty[l] - r[l]);
+          int ye = MIN(src->ymax, ty[l] + r[l] + 1);
+          int xo = (px - xb - pat->offx)%pat->x;
+          int yo = (py - yb - pat->offy)%pat->y;
+          if (xo < 0) xo += pat->x;
+          if (yo < 0) yo += pat->y;
+          for(int ix = xb + xo; ix < xe; ix += pat->x)
+            for(int iy = yb + yo; iy < ye; iy += pat->y)
+            {
+              float dx = ix - tx[l];
+              float dy = iy - ty[l];
+              float d2 = dx * dx + dy * dy;
+              k[l] += src->data[iy * src->lst + ix * src->sst]
+                / buf->data[iy * buf->lst + ix * buf->sst]
+                * dt_maze_p(rsrc[l], rdst[l], d2);
+            }
+        }
+      /* k[0]*=4; */
+      /* k[1]*=2; */
+      /* k[2]*=4; */
+      float ka = (k[0]*4 +  k[1]*2 + k[2]*4)/3;
+      for(int l = 0; l < src->ch; l++)
+      {
+        dst->data[jy * dst->lst + jx * dst->sst + l] *= ka;//[l];
+        /* printf("%f %f %f\n",k[0],k[1],k[2]); */
+      }
+    }
+}
 
 void
 dt_maze_mosaic_interpolate(
@@ -84,7 +220,7 @@ dt_maze_mosaic_interpolate(
   float *val)
 {
   const float margin = 8.0;
-  const int weighting_iterations = 1;
+  const int weighting_iterations = 0;
 
   const int degn = lin_size(2, deg) + img->ch - 1;
 
