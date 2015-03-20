@@ -29,7 +29,8 @@
 
 static inline float envelop(float x, float r)
 {
-  return (1 - x/r)*(1 - x/r);
+  float t = 1 - x*x/(r*r);
+  return t*t;
 }
 
 void
@@ -214,27 +215,22 @@ dt_maze_mosaic_interpolate(
   const maze_image_t *img,
   const maze_pattern_t *pat,
   const int deg,
+  const int iterations,
   const float r,
   const float *x,
   const float *y,
   float *val)
 {
   const float margin = 8.0;
-  const int weighting_iterations = 0;
 
   const int degn = lin_size(2, deg) + img->ch - 1;
 
-  float er = MAX(1.0, r); // focus radius
-  float r0[img->ch], ir[img->ch];
+  float er[img->ch], mr[img->ch], ir[img->ch];
   for (int ch = 0; ch < img->ch; ch++)
   {
-#if 0
-    float adj = pat->quant[ch];
-#else
-    float adj = 1.0/img->ch;
-#endif
-    r0[ch] = sqrtf(2*degn*adj/M_PI + img->ch + 2); // min sampling radius
-    ir[ch] = MAX(r0[ch], r); // actual sampling radius
+    er[ch] = ch == 1 ? MAX(1.44, r) : MAX(2.0, r);
+    mr[ch] = MAX(4.0, deg); // margin radius
+    ir[ch] = MAX(mr[ch], r); // input radius
   }
 
   for (int ch = 0; ch < img->ch; ch++)
@@ -249,30 +245,33 @@ dt_maze_mosaic_interpolate(
         x[ch] > img->xmax - 1 + margin ||
         y[ch] > img->ymax - 1 + margin)
       return;
-    if (x[ch] >= img->xmin + r0[ch] &&
-        y[ch] >= img->ymin + r0[ch] &&
-        x[ch] <= img->xmax - 1 - r0[ch] &&
-        y[ch] <= img->ymax - 1 - r0[ch])
+    if (x[ch] >= img->xmin + mr[ch] &&
+        y[ch] >= img->ymin + mr[ch] &&
+        x[ch] <= img->xmax - 1 - mr[ch] &&
+        y[ch] <= img->ymax - 1 - mr[ch])
       break;
     float d = MAX(
-      MAX(img->xmin + r0[ch] - x[ch], x[ch] - img->xmax + r0[ch] + 1),
-      MAX(img->ymin + r0[ch] - y[ch], y[ch] - img->ymax + r0[ch] + 1));
+      MAX(img->xmin + mr[ch] - x[ch], x[ch] - img->xmax + mr[ch] + 1),
+      MAX(img->ymin + mr[ch] - y[ch], y[ch] - img->ymax + mr[ch] + 1));
     ir[ch] = MAX(ir[ch], 1.5*d);
     outside = 1;
   }
-  (void)outside;
 
   // retreive the data
   int vcount = 0;
   int vcountmax = 1024;
+  float sk[img->ch];
+  float sv[img->ch];
   int vc[vcountmax];
   float vk[vcountmax], ve[vcountmax];
   float vx[vcountmax], vy[vcountmax];
   float vv[vcountmax];
   for (int ch = 0; ch < img->ch; ch++)
   {
+    sk[ch] = 0.0;
+    sv[ch] = 0.0;
     const float ir2 = ir[ch]*ir[ch];
-    const float er2 = er*er;
+    const float er2 = er[ch]*er[ch];
     const int bx = MAX(floor(x[ch] - ir[ch]) + 1, img->xmin);
     const int by = MAX(floor(y[ch] - ir[ch]) + 1, img->ymin);
     const int ex = MIN(ceil(x[ch] + ir[ch]), img->xmax);
@@ -293,15 +292,21 @@ dt_maze_mosaic_interpolate(
           vy[c] = dy;
           vv[c] = img->data[img->lst*sy + img->sst*sx];
           vk[c] = envelop(dd, ir2) / (1 + dd/er2);
-          ve[c] = 5000*dd/er2;
+          ve[c] = 50*dd/er2;
+          sk[ch] += vk[c];
+          sv[ch] += vk[c]*vv[c];
         }
       }
   }
-
   assert(vcount < vcountmax);
-  if (vcount <= degn)
+
+  int downscale = 0; // debug: should be 1
+  for (int ch = 0; ch < img->ch; ch++)
+    downscale &= sk[ch] > degn;
+  if (outside || downscale)
   {
-    printf("mosaic interpolate: insufficient data count=%d\n", vcount);
+    for (int ch = 0; ch < img->ch; ch++)
+      val[ch] = sv[ch] / sk[ch];
     return;
   }
 
@@ -321,7 +326,7 @@ dt_maze_mosaic_interpolate(
   }
 
   // adjust the weights
-  for (int i = 0; i < weighting_iterations; i++)
+  for (int i = 0; i < iterations; i++)
   {
     lin_zero(degn, mt, vt);
     for (int c = 0; c < vcount; c++)
@@ -376,19 +381,18 @@ void
 dt_maze_interpolate(
   const maze_image_t *img,
   const int deg,
+  const int iterations,
   const float margin,
   const float r,
   const float *x,
   const float *y,
   float *val)
 {
-  const int weighting_iterations = 1;
-
   const int degn = lin_size(2, deg);
 
   float er = MAX(1.0, r); // focus radius
-  float r0 = sqrtf(1.75*degn/M_PI + 2); // min sampling radius
-  float ir = MAX(r0, r); // actual sampling radius
+  float mr = MAX(2.0, deg);
+  float ir = MAX(mr, r); // actual sampling radius
 
   for (int ch = 0; ch < img->ch; ch++)
     val[ch] = 0.0;
@@ -402,14 +406,14 @@ dt_maze_interpolate(
         x[ch] > img->xmax - 1 + margin ||
         y[ch] > img->ymax - 1 + margin)
       return;
-    if (x[ch] >= img->xmin + r0 &&
-        y[ch] >= img->ymin + r0 &&
-        x[ch] <= img->xmax - 1 - r0 &&
-        y[ch] <= img->ymax - 1 - r0)
+    if (x[ch] >= img->xmin + mr &&
+        y[ch] >= img->ymin + mr &&
+        x[ch] <= img->xmax - 1 - mr &&
+        y[ch] <= img->ymax - 1 - mr)
       break;
     float d = MAX(
-      MAX(img->xmin + r0 - x[ch], x[ch] - img->xmax + r0 + 1),
-      MAX(img->ymin + r0 - y[ch], y[ch] - img->ymax + r0 + 1));
+      MAX(img->xmin + mr - x[ch], x[ch] - img->xmax + mr + 1),
+      MAX(img->ymin + mr - y[ch], y[ch] - img->ymax + mr + 1));
     ir = MAX(ir, 1.5*d);
     outside = 1;
   }
@@ -424,9 +428,9 @@ dt_maze_interpolate(
   float vv[img->ch][vcountmax];
   for (int ch = 0; ch < img->ch; ch++)
   {
-    vcount[ch] = 0;
     sk[ch] = 0.0;
     sv[ch] = 0.0;
+    vcount[ch] = 0;
     float ir2 = ir*ir;
     float er2 = er*er;
     const int bx = MAX(floor(x[ch] - ir) + 1, img->xmin);
@@ -444,29 +448,26 @@ dt_maze_interpolate(
         vx[ch][c] = dx;
         vy[ch][c] = dy;
         vv[ch][c] = img->data[img->lst*sy + img->sst*sx + ch];
-        vk[ch][c] = envelop(dd, ir2) / (1 + dd/er2);
-        ve[ch][c] = 5000*dd/er2;
+        vk[ch][c] = envelop(dd, ir2) / (1 + dd*dd/(er2*er2));
+        ve[ch][c] = 50*dd/er2;
         sk[ch] += vk[ch][c];
         sv[ch] += vk[ch][c]*vv[ch][c];
       }
+    assert(vcount[ch] < vcountmax);
+  }
 
-      assert(vcount[ch] < vcountmax);
+  int downscale = 0; // debug: should be 1
+  for (int ch = 0; ch < img->ch; ch++)
+    downscale &= sk[ch] > deg*deg;
+  if (outside || downscale)
+  {
+    for (int ch = 0; ch < img->ch; ch++)
+      val[ch] = sv[ch] / sk[ch];
+    return;
   }
 
   for (int ch = 0; ch < img->ch; ch++)
-    if (sk[ch] < 1.0)
-      return; // outside data range
-
-  for (int ch = 0; ch < img->ch; ch++)
   {
-    if (outside || sk[ch] > 3*degn)
-    {
-      if (!outside)
-        printf("interpolate: downsampling\n");
-      val[ch] = sv[ch] / sk[ch];
-      continue;
-    }
-
     float st[degn];
     float vt[degn];
     float mt[degn*degn];
@@ -483,7 +484,7 @@ dt_maze_interpolate(
     }
 
     // adjust the weights
-    for (int i = 0; i < weighting_iterations; i++)
+    for (int i = 0; i < iterations; i++)
     {
       lin_zero(degn, mt, vt);
       for (int c = 0; c < vcount[ch]; c++)

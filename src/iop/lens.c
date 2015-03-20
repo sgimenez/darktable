@@ -436,11 +436,9 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
           0, 1,
           1, 2,
         };
-      const float patquant[] = { 2.0/5.0, 1.0/5.0, 2.0/5.0 };
       pat.x = 2;
       pat.y = 2;
       pat.data = patdata;
-      pat.quant = patquant;
       pat.offx = !ca & 1;
       pat.offy = fb & 1;
     }
@@ -472,12 +470,8 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
             py[i] = pi[2 * i + 1] - roi_in->y;
           }
           const float r = 2 / M_PI * iscale / oscale;
-          const float rmax = 3.0;
           float val[3];
-          if (r > rmax)
-            dt_maze_mosaic_downsample(&img, &pat, r, px, py, val);
-          else
-            dt_maze_mosaic_interpolate(&img, &pat, 2, r, px, py, val);
+          dt_maze_mosaic_interpolate(&img, &pat, 2, 1, r, px, py, val);
           odata[ch * owidth * y + ch * x] = fmaxf(0.0, val[color]);
         }
       else // demosaicaized
@@ -492,9 +486,10 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
           }
           float val[3];
           const int degree = 2;
+          const int pass = 1;
           const float margin = 10*iscale;
           const float r = 2/M_PI*iscale/oscale;
-          dt_maze_interpolate(&img, degree, margin, r, px, py, val);
+          dt_maze_interpolate(&img, degree, pass, margin, r, px, py, val);
           for (int i = 0; i < ch; i++)
             odata[ch*owidth*y+ch*x+i] = fmaxf(0.0, val[i]);
         }

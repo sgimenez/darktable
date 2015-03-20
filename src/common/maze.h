@@ -34,7 +34,6 @@ typedef struct {
   int x;
   int y;
   const int *data;
-  const float *quant;
   int offx;
   int offy;
 } maze_pattern_t;
@@ -43,6 +42,7 @@ void
 dt_maze_interpolate(
   const maze_image_t *img,
   const int degree,
+  const int iterations,
   const float margin,
   const float r,
   const float *x,
@@ -62,6 +62,7 @@ dt_maze_mosaic_interpolate(
   const maze_image_t *img,
   const maze_pattern_t *pat,
   const int degree,
+  const int iterations,
   const float r,
   const float *x,
   const float *y,

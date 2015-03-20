@@ -192,7 +192,8 @@ lin_get2_mean(int d, float *st, float r)
     return st[0] + 1.0/3.0*(st[2]+st[5])*r*r; // todo: do the math
   if (d == 3)
     return st[0] + 1.0/3.0*(st[2]+st[7])*r*r; // todo: do the math
-  return -1;
+
+  return st[0] + 1.0/3.0*(st[2]+st[1+2*d])*r*r; // todo: extend
 }
 
 static inline void
@@ -272,7 +273,8 @@ lin_get2m_mean(int d, int cn, float *st, int c, float r)
     return st[c] + 1.0/3.0*(st[cn+1]+st[cn+4])*r*r; // todo: do the math
   if (d == 3)
     return st[c] + 1.0/3.0*(st[cn+1]+st[cn+6])*r*r; // todo: do the math
-  return -1;
+
+  return st[c] + 1.0/3.0*(st[cn+1]+st[cn+2*d])*r*r; // todo: extend
 }
 
 static inline void

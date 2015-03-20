@@ -41,19 +41,26 @@ DT_MODULE_INTROSPECTION(1, dt_iop_ether_params_t)
 typedef struct dt_iop_ether_params_t
 {
   int cacorrect; // rename to ca_type
-  float scaling;
+  int idegree;
+  int ipass;
+  int ideconv;
 } dt_iop_ether_params_t;
 
 typedef struct dt_iop_ether_gui_data_t
 {
-  GtkWidget *tcombo;
+  GtkWidget *tcombo1;
+  GtkWidget *tcombo2;
+  GtkWidget *tcombo3;
+  GtkWidget *tcombo4;
 } dt_iop_ether_gui_data_t;
 
 typedef struct dt_iop_ether_data_t
 {
   int cacorrect;
-  float scaling;
-  int degree;
+  int idegree;
+  int ipass;
+  int ideconv;
+  int fdegree;
   void *fitdata;
 } dt_iop_ether_data_t;
 
@@ -100,7 +107,9 @@ int legacy_params(dt_iop_module_t *self, const void *const old_params, const int
   if(old_version == 1 && new_version == 2)
   {
     new_p->cacorrect = 1;
-    new_p->scaling = 2.0;
+    new_p->idegree = 2;
+    new_p->ipass = 1;
+    new_p->ideconv = 2;
     return 0;
   }
   return 1;
@@ -155,7 +164,7 @@ static void CA_analyse(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
   const int sl = CA_SHIFT;
   const int radial = d->cacorrect == 2;
-  const int deg = d->degree;
+  const int deg = d->fdegree;
   const int degn = lin_size(radial ? 1 : 2, deg);
 
   const int srad = 22; // size of samples, must be even
@@ -498,7 +507,7 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   const int sl = CA_SHIFT;
   int generic = d->cacorrect == 1;
   int radial = d->cacorrect == 2;
-  const int deg = d->degree;
+  const int deg = d->fdegree;
   const int degn = lin_size(radial ? 1 : 2, deg);
 
   const int TS = (iwidth > 2024 && iheight > 2024) ? 256 : 128;
@@ -539,12 +548,10 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
       0, 1,
       1, 2,
     };
-  const float patquant[] = { 2.0/5.0, 1.0/5.0, 2.0/5.0 };
   maze_pattern_t pat;
   pat.x = 2;
   pat.y = 2;
   pat.data = patdata;
-  pat.quant = patquant;
   pat.offx = !ca & 1;
   pat.offy = fb & 1;
 
@@ -582,6 +589,9 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 #pragma omp parallel for schedule(static)
 #endif
   for(int oby = 0; oby < oheight; oby += TS)
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for(int obx = 0; obx < owidth; obx += TS)
     {
       int oex = MIN(owidth, obx + TS);
@@ -635,13 +645,9 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
           // shift by interpolation
           float val[3];
           const float r = 2 / M_PI / oscale;
-          const float rmax = 3;
-          if(r > rmax)
-            dt_maze_mosaic_downsample(&img, &pat, r, bh, bv, val);
-          else
-            dt_maze_mosaic_interpolate(&img, &pat, 2, r, bh, bv, val);
+          dt_maze_mosaic_interpolate(&img, &pat, d->idegree, d->ipass, r, bh, bv, val);
           /* dt_maze_mosaic_closest(&img, &pat, bh, bv, val); */
-          for(int color = 0; color < 3; color += 2)
+          for (int color = 0; color < 3; color += 2)
             val[color] = fmaxf(0.0, val[color]);
 
           // show shift norms as isos
@@ -667,10 +673,11 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
     }
 
   printf("ether: deconvolve\n");
+
   float r = 0.90;
   float rsrc[3] = { 2.0f*r, sqrt(2.0f)*r, 2.0f*r };
-  float rdst[3] = { 1.0f*r, 1.0f*r, 1.0f*r };
-  for(int k = 0; k < 3; k++)
+  float rdst[3] = { 1.0f*r / oscale, 1.0f*r / oscale, 1.0f*r / oscale };
+  for(int k = 0; k < d->ideconv; k++)
     dt_maze_mosaic_deconvolve(&img, &pat, &buf, &shift, &dst, rsrc, rdst);
 
   free(buf.data);
@@ -696,7 +703,9 @@ void reload_defaults(dt_iop_module_t *module)
   // init defaults:
   dt_iop_ether_params_t p;
   p.cacorrect = 1;
-  p.scaling = 2.;
+  p.idegree = 2;
+  p.ipass = 1;
+  p.ideconv = 2;
   memcpy(module->params, &p, sizeof(dt_iop_ether_params_t));
   memcpy(module->default_params, &p, sizeof(dt_iop_ether_params_t));
 
@@ -743,18 +752,20 @@ void commit_params(dt_iop_module_t *self, dt_iop_ether_params_t *p,
 
   // set up parameters
   d->cacorrect = p->cacorrect;
-  d->scaling = p->scaling;
-  if(p->cacorrect == 1)
+  d->idegree = p->idegree;
+  d->ipass = p->ipass;
+  d->ideconv = p->ideconv;
+  if (p->cacorrect == 1)
   {
     int rdegree = get_radial_degree();
-    if(rdegree <= 0) rdegree = 1; // default value
-    d->degree = rdegree; // order of the radial polynomial fit
+    if (rdegree <= 0) rdegree = 4; // default value
+    d->fdegree = rdegree; // order of the radial polynomial fit
   }
   else
   {
     int gdegree = get_degree();
-    if(gdegree < 0) gdegree = 4; // default value
-    d->degree = gdegree; // order of the 2-dimentional polynomial fit
+    if (gdegree < 0) gdegree = 4; // default value
+    d->fdegree = gdegree; // order of the 2-dimentional polynomial fit
   }
 }
 
@@ -780,7 +791,10 @@ void gui_update(dt_iop_module_t *self)
 {
   dt_iop_ether_gui_data_t *g = self->gui_data;
   dt_iop_ether_params_t *p = (void *)self->params;
-  dt_bauhaus_combobox_set(g->tcombo, p->cacorrect);
+  dt_bauhaus_combobox_set(g->tcombo1, p->cacorrect);
+  dt_bauhaus_combobox_set(g->tcombo2, p->idegree);
+  dt_bauhaus_combobox_set(g->tcombo3, p->ipass);
+  dt_bauhaus_combobox_set(g->tcombo4, p->ideconv);
 }
 
 static void cacorrect_changed(GtkWidget *widget, dt_iop_module_t *self)
@@ -788,7 +802,34 @@ static void cacorrect_changed(GtkWidget *widget, dt_iop_module_t *self)
   dt_iop_ether_gui_data_t *g = self->gui_data;
   dt_iop_ether_params_t *p = (void *)self->params;
   if(self->dt->gui->reset) return;
-  p->cacorrect = dt_bauhaus_combobox_get(g->tcombo);
+  p->cacorrect = dt_bauhaus_combobox_get(g->tcombo1);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void idegree_changed(GtkWidget *widget, dt_iop_module_t *self)
+{
+  dt_iop_ether_gui_data_t *g = self->gui_data;
+  dt_iop_ether_params_t *p = (void *)self->params;
+  if(self->dt->gui->reset) return;
+  p->idegree = dt_bauhaus_combobox_get(g->tcombo2);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void ipass_changed(GtkWidget *widget, dt_iop_module_t *self)
+{
+  dt_iop_ether_gui_data_t *g = self->gui_data;
+  dt_iop_ether_params_t *p = (void *)self->params;
+  if(self->dt->gui->reset) return;
+  p->ipass = dt_bauhaus_combobox_get(g->tcombo3);
+  dt_dev_add_history_item(darktable.develop, self, TRUE);
+}
+
+static void ideconv_changed(GtkWidget *widget, dt_iop_module_t *self)
+{
+  dt_iop_ether_gui_data_t *g = self->gui_data;
+  dt_iop_ether_params_t *p = (void *)self->params;
+  if(self->dt->gui->reset) return;
+  p->ideconv = dt_bauhaus_combobox_get(g->tcombo4);
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
@@ -798,14 +839,47 @@ void gui_init(dt_iop_module_t *self)
   dt_iop_ether_gui_data_t *g = self->gui_data;
 
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
-  g->tcombo = dt_bauhaus_combobox_new(self);
-  dt_bauhaus_widget_set_label(g->tcombo, NULL, _("chromatic correction"));
-  dt_bauhaus_combobox_clear(g->tcombo);
-  dt_bauhaus_combobox_add(g->tcombo, _("none"));
-  dt_bauhaus_combobox_add(g->tcombo, _("generic"));
-  dt_bauhaus_combobox_add(g->tcombo, _("radial"));
-  g_signal_connect(G_OBJECT (g->tcombo), "value-changed", G_CALLBACK(cacorrect_changed), (gpointer)self);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo, TRUE, TRUE, 0);
+
+  g->tcombo1 = dt_bauhaus_combobox_new(self);
+  dt_bauhaus_widget_set_label(g->tcombo1, NULL, _("chromatic correction"));
+  dt_bauhaus_combobox_clear(g->tcombo1);
+  dt_bauhaus_combobox_add(g->tcombo1, _("none"));
+  dt_bauhaus_combobox_add(g->tcombo1, _("generic"));
+  dt_bauhaus_combobox_add(g->tcombo1, _("radial"));
+  g_signal_connect(G_OBJECT(g->tcombo1), "value-changed", G_CALLBACK(cacorrect_changed), (gpointer)self);
+  gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo1, TRUE, TRUE, 0);
+
+  g->tcombo2 = dt_bauhaus_combobox_new(self);
+  dt_bauhaus_widget_set_label(g->tcombo2, NULL, _("interpolation degree"));
+  dt_bauhaus_combobox_clear(g->tcombo2);
+  dt_bauhaus_combobox_add(g->tcombo2, _("0"));
+  dt_bauhaus_combobox_add(g->tcombo2, _("1"));
+  dt_bauhaus_combobox_add(g->tcombo2, _("2"));
+  dt_bauhaus_combobox_add(g->tcombo2, _("3"));
+  dt_bauhaus_combobox_add(g->tcombo2, _("4"));
+  g_signal_connect(G_OBJECT(g->tcombo2), "value-changed", G_CALLBACK(idegree_changed), (gpointer)self);
+  gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo2, TRUE, TRUE, 0);
+
+  g->tcombo3 = dt_bauhaus_combobox_new(self);
+  dt_bauhaus_widget_set_label(g->tcombo3, NULL, _("weighting iterations"));
+  dt_bauhaus_combobox_clear(g->tcombo3);
+  dt_bauhaus_combobox_add(g->tcombo3, _("0"));
+  dt_bauhaus_combobox_add(g->tcombo3, _("1"));
+  dt_bauhaus_combobox_add(g->tcombo3, _("2"));
+  dt_bauhaus_combobox_add(g->tcombo3, _("3"));
+  g_signal_connect(G_OBJECT(g->tcombo3), "value-changed", G_CALLBACK(ipass_changed), (gpointer)self);
+  gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo3, TRUE, TRUE, 0);
+
+  g->tcombo4 = dt_bauhaus_combobox_new(self);
+  dt_bauhaus_widget_set_label(g->tcombo4, NULL, _("deconv iterations"));
+  dt_bauhaus_combobox_clear(g->tcombo4);
+  dt_bauhaus_combobox_add(g->tcombo4, _("0"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("1"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("2"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("3"));
+  g_signal_connect(G_OBJECT(g->tcombo4), "value-changed", G_CALLBACK(ideconv_changed), (gpointer)self);
+  gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo4, TRUE, TRUE, 0);
+
 }
 
 void gui_cleanup(dt_iop_module_t *self)
