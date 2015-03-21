@@ -585,6 +585,18 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   dst.xmax = owidth;
   dst.ymax = oheight;
 
+  maze_trans_t tr1;
+  tr1.width = 128;
+  tr1.height = 128;
+  tr1.data = malloc(128 * 128 * sizeof(float));
+  dt_maze_trans_build(&tr1, NULL, 2.0f, 1.0f / oscale);
+  maze_trans_t tr2;
+  tr2.width = 128;
+  tr2.height = 128;
+  tr2.data = malloc(128 * 128 * sizeof(float));
+  dt_maze_trans_build(&tr2, NULL, sqrt(2.0f), 1.0f / oscale);
+  const maze_trans_t *tr[3] = { &tr1, &tr2, &tr1 };
+
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -644,11 +656,11 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
           // shift by interpolation
           float val[3];
-          const float r = 2 / M_PI / oscale;
-          dt_maze_mosaic_interpolate(&img, &pat, d->idegree, d->ipass, r, bh, bv, val);
+          /* const float r = 2 / M_PI / oscale; */
+          /* dt_maze_mosaic_interpolate(&img, &pat, d->idegree, d->ipass, r, bh, bv, val); */
           /* dt_maze_mosaic_closest(&img, &pat, bh, bv, val); */
-          for (int color = 0; color < 3; color += 2)
-            val[color] = fmaxf(0.0, val[color]);
+          for (int color = 0; color < 3; color++)
+            val[color] = 1.0; //fmaxf(0.0, val[color]);
 
           // show shift norms as isos
           if(visuals)
@@ -674,14 +686,13 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
   printf("ether: deconvolve\n");
 
-  float r = 1.0;
-  float rsrc[3] = { 2.0f*r, sqrt(2.0f)*r, 2.0f*r };
-  float rdst[3] = { 1.0f / oscale, 1.0f / oscale, 1.0f / oscale };
   for(int k = 0; k < d->ideconv; k++)
-    dt_maze_mosaic_deconvolve(&img, &pat, &buf, &shift, &dst, rsrc, rdst);
+    dt_maze_mosaic_deconvolve(&img, &pat, &buf, &shift, &dst, tr);
 
   free(buf.data);
   free(shift.data);
+  free(tr1.data);
+  free(tr2.data);
 
 #if ETHER_DEBUG
   time_end = clock();
@@ -774,7 +785,6 @@ void init_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe
   piece->data = malloc(sizeof(dt_iop_ether_data_t));
   dt_iop_ether_data_t *d = piece->data;
   d->fitdata = NULL;
-  //printf("ether: init_pipe\n");
 }
 
 void cleanup_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)
@@ -784,7 +794,6 @@ void cleanup_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelp
     free(d->fitdata);
   free(piece->data);
   piece->data = NULL;
-  //printf("ether: cleanup_pipe\n");
 }
 
 void gui_update(dt_iop_module_t *self)

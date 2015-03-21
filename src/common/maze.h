@@ -38,6 +38,16 @@ typedef struct {
   int offy;
 } maze_pattern_t;
 
+typedef struct {
+  float *data;
+  int width;
+  int height;
+  float xmin;
+  float ymin;
+  float xmax;
+  float ymax;
+} maze_trans_t;
+
 void
 dt_maze_interpolate(
   const maze_image_t *img,
@@ -84,7 +94,13 @@ dt_maze_mosaic_deconvolve(
   const maze_image_t *buf,
   const maze_image_t *shift,
   const maze_image_t *dst,
-  const float *const rsrc,
-  const float *const rdst);
+  const maze_trans_t **tr);
+
+void
+dt_maze_trans_build(
+  maze_trans_t *t,
+  const maze_pattern_t *pat,
+  float rs,
+  float rd);
 
 #endif

@@ -106,21 +106,21 @@ dt_maze_mosaic_downsample(
   }
 }
 
-// bilinear convolution
-float dt_maze_d2_approx(float rsrc, float rdst, float dx, float dy)
+// approximate convolution
+float dt_maze_d2_approx(float rs, float rd, float dx, float dy)
 {
-  float r = rsrc + rdst;
+  float r = rs + rd;
   float fx = fmax(1.0f - fabs(dx) / r, 0.0f);
   float fy = fmax(1.0f - fabs(dy) / r, 0.0f);
   return fx * fy;
 }
 
-// todo: correct bilinear convolution
+// correct linear kernel convolution
 float dt_maze_d1(float r1, float r2, float du)
 {
   float r = 0.0f;
-  float p1 = -du/2;
-  float p2 = +du/2;
+  float p1 = - du / 2;
+  float p2 = + du / 2;
   {
     float ub = fmax(p1 - r1, p2 - r2);
     float ue = fmin(p1, p2);
@@ -173,25 +173,45 @@ float dt_maze_d1(float r1, float r2, float du)
 }
 
 // todo: correct bilinear convolution
-float dt_maze_d2(float rsrc, float rdst, float dx, float dy)
+float dt_maze_d2(float rs, float rd, float dx, float dy)
 {
-  return dt_maze_d1(rsrc, rdst, dx) * dt_maze_d1(rsrc, rdst, dy);
+  return dt_maze_d1(rs, rd, dx) * dt_maze_d1(rs, rd, dy);
 }
 
-void
-dt_maze_mosaic_deconvolve(
+void dt_maze_trans_build(
+  maze_trans_t *t,
+  const maze_pattern_t *pat,
+  float rs,
+  float rd)
+{
+  t->xmin = - rs - rd;
+  t->ymin = - rs - rd;
+  t->xmax = + rs + rd;
+  t->ymax = + rs + rd;
+  for(int i = 0; i < t->width; i++)
+    for(int j = 0; j < t->height; j++)
+    {
+      float dx = t->xmin + (i + 0.5f) / t->width * (t->xmax - t->xmin);
+      float dy = t->ymin + (j + 0.5f) / t->height * (t->ymax - t->ymin);
+      t->data[t->width * j + i] = dt_maze_d2(rs, rd, dx, dy);
+    }
+}
+
+float dt_maze_trans_get(const maze_trans_t *tr, float dx, float dy)
+{
+  int i = (dx - tr->xmin) / (tr->xmax - tr->xmin) * tr->width;
+  int j = (dy - tr->ymin) / (tr->ymax - tr->ymin) * tr->height;
+  return tr->data[tr->width * j + i];
+}
+
+void dt_maze_mosaic_deconvolve(
   const maze_image_t *src,
   const maze_pattern_t *pat,
   const maze_image_t *buf,
   const maze_image_t *shift,
   const maze_image_t *dst,
-  const float *const rsrc,
-  const float *const rdst)
+  const maze_trans_t **tr)
 {
-  float r[3];
-  for(int l = 0; l < src->ch; l++)
-    r[l] = rsrc[l] + rdst[l];
-
   for(int ix = src->xmin; ix < src->xmax; ix++)
     for(int iy = src->ymin; iy < src->ymax; iy++)
     {
@@ -211,10 +231,10 @@ dt_maze_mosaic_deconvolve(
         for(int py = 0; py < pat->y; py++)
         {
           int l = pat->data[py*pat->x + px];
-          int xb = MAX(src->xmin, tx[l] - r[l]);
-          int xe = MIN(src->xmax, tx[l] + r[l] + 1);
-          int yb = MAX(src->ymin, ty[l] - r[l]);
-          int ye = MIN(src->ymax, ty[l] + r[l] + 1);
+          int xb = MAX(src->xmin, floor(tx[l] + tr[l]->xmin) + 1);
+          int xe = MIN(src->xmax, ceil(tx[l] + tr[l]->xmax));
+          int yb = MAX(src->ymin, floor(ty[l] + tr[l]->ymin) + 1);
+          int ye = MIN(src->ymax, ceil(ty[l] + tr[l]->ymax));
           int xo = (px - xb - pat->offx)%pat->x;
           int yo = (py - yb - pat->offy)%pat->y;
           if (xo < 0) xo += pat->x;
@@ -225,7 +245,7 @@ dt_maze_mosaic_deconvolve(
               float dx = ix - tx[l];
               float dy = iy - ty[l];
               float *c = buf->data + iy * buf->lst + ix * buf->sst;
-              float k = dt_maze_d2(rsrc[l], rdst[l], dx, dy);
+              float k = dt_maze_trans_get(tr[l], dx, dy);
               c[0] += k * dst->data[jy * dst->lst + jx * dst->sst + l];
               c[1] += k;
             }
@@ -251,10 +271,10 @@ dt_maze_mosaic_deconvolve(
         for(int py = 0; py < pat->y; py++)
         {
           int l = pat->data[py*pat->x + px];
-          int xb = MAX(src->xmin, tx[l] - r[l]);
-          int xe = MIN(src->xmax, tx[l] + r[l] + 1);
-          int yb = MAX(src->ymin, ty[l] - r[l]);
-          int ye = MIN(src->ymax, ty[l] + r[l] + 1);
+          int xb = MAX(src->xmin, floor(tx[l] + tr[l]->xmin) + 1);
+          int xe = MIN(src->xmax, ceil(tx[l] + tr[l]->xmax));
+          int yb = MAX(src->ymin, floor(ty[l] + tr[l]->ymin) + 1);
+          int ye = MIN(src->ymax, ceil(ty[l] + tr[l]->ymax));
           int xo = (px - xb - pat->offx)%pat->x;
           int yo = (py - yb - pat->offy)%pat->y;
           if (xo < 0) xo += pat->x;
@@ -265,14 +285,14 @@ dt_maze_mosaic_deconvolve(
               float dx = ix - tx[l];
               float dy = iy - ty[l];
               float *c = buf->data + iy * buf->lst + ix * buf->sst;
-              float k = dt_maze_d2(rsrc[l], rdst[l], dx, dy);
-              f[l] += k * src->data[iy * src->lst + ix * src->sst] / c[0] * c[1];
+              float k = dt_maze_trans_get(tr[l], dx, dy);
+              f[l] += k * src->data[iy * src->lst + ix * src->sst]
+                / c[0] * c[1];
               fn[l] += k;
             }
         }
       for(int l = 0; l < src->ch; l++)
         f[l] /= fn[l];
-      /* float fa = (f[0] + f[1] + f[2])/3; */
       for(int l = 0; l < src->ch; l++)
         dst->data[jy * dst->lst + jx * dst->sst + l] *= f[l];
     }
