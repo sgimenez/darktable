@@ -655,12 +655,14 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
           shift.data[outr * shift.lst + outc * shift.sst + 5] = bv[2];
 
           // shift by interpolation
-          float val[3];
-          /* const float r = 2 / M_PI / oscale; */
-          /* dt_maze_mosaic_interpolate(&img, &pat, d->idegree, d->ipass, r, bh, bv, val); */
-          /* dt_maze_mosaic_closest(&img, &pat, bh, bv, val); */
+          float val[3] = { 0.5, 0.5, 0.5 };
+          /*
+            const float r = 2 / M_PI / oscale;
+          dt_maze_mosaic_interpolate(&img, &pat, d->idegree, d->ipass, r, bh, bv, val);
+          dt_maze_mosaic_closest(&img, &pat, bh, bv, val);
           for (int color = 0; color < 3; color++)
-            val[color] = 1.0; //fmaxf(0.0, val[color]);
+            val[color] = fmaxf(0.0, val[color]);
+          */
 
           // show shift norms as isos
           if(visuals)
@@ -687,7 +689,7 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   printf("ether: deconvolve\n");
 
   for(int k = 0; k < d->ideconv; k++)
-    dt_maze_mosaic_deconvolve(&img, &pat, &buf, &shift, &dst, tr);
+    dt_maze_mosaic_deconvolve(&img, &pat, &buf, &shift, &dst, tr, pow(0.5, k));
 
   free(buf.data);
   free(shift.data);
@@ -881,13 +883,14 @@ void gui_init(dt_iop_module_t *self)
   gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo3, TRUE, TRUE, 0);
 
   g->tcombo4 = dt_bauhaus_combobox_new(self);
-  dt_bauhaus_widget_set_label(g->tcombo4, NULL, _("deconv iterations"));
+  dt_bauhaus_widget_set_label(g->tcombo4, NULL, _("deconvolution iterations"));
   dt_bauhaus_combobox_clear(g->tcombo4);
   dt_bauhaus_combobox_add(g->tcombo4, _("0"));
   dt_bauhaus_combobox_add(g->tcombo4, _("1"));
   dt_bauhaus_combobox_add(g->tcombo4, _("2"));
   dt_bauhaus_combobox_add(g->tcombo4, _("3"));
   dt_bauhaus_combobox_add(g->tcombo4, _("4"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("5"));
   g_signal_connect(G_OBJECT(g->tcombo4), "value-changed", G_CALLBACK(ideconv_changed), (gpointer)self);
   gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo4, TRUE, TRUE, 0);
 

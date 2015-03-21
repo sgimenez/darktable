@@ -106,12 +106,12 @@ dt_maze_mosaic_downsample(
   }
 }
 
-// approximate convolution
+// approximate grid convolution
 float dt_maze_d2_approx(float rs, float rd, float dx, float dy)
 {
   float r = rs + rd;
-  float fx = fmax(1.0f - fabs(dx) / r, 0.0f);
-  float fy = fmax(1.0f - fabs(dy) / r, 0.0f);
+  float fx = fmaxf(1.0f - fabs(dx) / r, 0.0f);
+  float fy = fmaxf(1.0f - fabs(dy) / r, 0.0f);
   return fx * fy;
 }
 
@@ -122,8 +122,8 @@ float dt_maze_d1(float r1, float r2, float du)
   float p1 = - du / 2;
   float p2 = + du / 2;
   {
-    float ub = fmax(p1 - r1, p2 - r2);
-    float ue = fmin(p1, p2);
+    float ub = fmaxf(p1 - r1, p2 - r2);
+    float ue = fminf(p1, p2);
     float v1 = r1 - p1;
     float v2 = r2 - p2;
     if (ub < ue)
@@ -134,8 +134,8 @@ float dt_maze_d1(float r1, float r2, float du)
     }
   }
   {
-    float ub = fmax(p1 - r1, p2);
-    float ue = fmin(p1, p2 + r2);
+    float ub = fmaxf(p1 - r1, p2);
+    float ue = fminf(p1, p2 + r2);
     float v1 = r1 - p1;
     float v2 = r2 + p2;
     if (ub < ue)
@@ -146,8 +146,8 @@ float dt_maze_d1(float r1, float r2, float du)
     }
   }
   {
-    float ub = fmax(p1, p2 - r2);
-    float ue = fmin(p1 + r1, p2);
+    float ub = fmaxf(p1, p2 - r2);
+    float ue = fminf(p1 + r1, p2);
     float v1 = r1 + p1;
     float v2 = r2 - p2;
     if (ub < ue)
@@ -158,8 +158,8 @@ float dt_maze_d1(float r1, float r2, float du)
     }
   }
   {
-    float ub = fmax(p1, p2);
-    float ue = fmin(p1 + r1, p2 + r2);
+    float ub = fmaxf(p1, p2);
+    float ue = fminf(p1 + r1, p2 + r2);
     float v1 = r1 + p1;
     float v2 = r2 + p2;
     if (ub < ue)
@@ -172,7 +172,7 @@ float dt_maze_d1(float r1, float r2, float du)
   return r;
 }
 
-// todo: correct bilinear convolution
+// grid bilinear convolution
 float dt_maze_d2(float rs, float rd, float dx, float dy)
 {
   return dt_maze_d1(rs, rd, dx) * dt_maze_d1(rs, rd, dy);
@@ -193,6 +193,7 @@ void dt_maze_trans_build(
     {
       float dx = t->xmin + (i + 0.5f) / t->width * (t->xmax - t->xmin);
       float dy = t->ymin + (j + 0.5f) / t->height * (t->ymax - t->ymin);
+      /* t->data[t->width * j + i] = dt_maze_d1(rs, rd, sqrt(dx*dx+dy*dy)); */
       t->data[t->width * j + i] = dt_maze_d2(rs, rd, dx, dy);
     }
 }
@@ -210,7 +211,9 @@ void dt_maze_mosaic_deconvolve(
   const maze_image_t *buf,
   const maze_image_t *shift,
   const maze_image_t *dst,
-  const maze_trans_t **tr)
+  const maze_trans_t **tr,
+  const float chroma)
+
 {
   for(int ix = src->xmin; ix < src->xmax; ix++)
     for(int iy = src->ymin; iy < src->ymax; iy++)
@@ -252,6 +255,9 @@ void dt_maze_mosaic_deconvolve(
         }
     }
 
+  /* float cmax = 1.0f; */
+  /* float cmin = 1.0f; */
+
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -292,10 +298,17 @@ void dt_maze_mosaic_deconvolve(
             }
         }
       for(int l = 0; l < src->ch; l++)
+      {
         f[l] /= fn[l];
+        /* cmax = fmaxf(cmax, f[l]); */
+        /* cmin = fminf(cmin, f[l]); */
+      }
       for(int l = 0; l < src->ch; l++)
-        dst->data[jy * dst->lst + jx * dst->sst + l] *= f[l];
+        dst->data[jy * dst->lst + jx * dst->sst + l] *=
+          chroma * f[l] + (1.0f - chroma) * (f[0] + f[1] + f[2]) / 3;
     }
+
+  /* printf("pass cmin=%f cmax=%f\n", cmin, cmax); */
 }
 
 void
