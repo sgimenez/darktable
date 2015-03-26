@@ -375,7 +375,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
          iwidth, iheight, roi_in->x, roi_in->y, roi_in->scale);
   printf("lens: o.w=%d o.h=%d o.x=%d o.y=%d s=%f\n",
          owidth, oheight, roi_out->x, roi_out->y, roi_out->scale);
-  printf("lens: orig_w=%f orig_h=%f moz=%d\n", orig_w, orig_h, moz);
+  printf("lens: orig_w=%f orig_h=%f moz=%d ch=%d\n", orig_w, orig_h, moz, ch);
 #endif
 
   dt_pthread_mutex_lock(&darktable.plugin_threadsafe);
@@ -403,9 +403,11 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
 
   if(mod_v && !d->inverse)
   {
+
 #if LENS_DEBUG
     printf("lens: vignette\n");
 #endif
+
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -419,8 +421,13 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
 
   if(mod_d)
   {
+
+#if LENS_DEBUG
+    printf("lens: distortion\n");
+#endif
+
     maze_image_t img;
-    img.ch = moz ? 3 : ch;
+    img.ch = moz ? 1 : ch;
     img.data = tmpbuf;
     img.sst = ch;
     img.lst = ch*iwidth;
@@ -438,18 +445,54 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
         };
       pat.x = 2;
       pat.y = 2;
+      pat.ch = 3;
       pat.data = patdata;
       pat.offx = !ca & 1;
       pat.offy = fb & 1;
     }
 
+    maze_image_t shift;
+    shift.ch = 2*ch;
+    shift.data = malloc(2*ch*owidth*oheight*sizeof(float));
+    shift.sst = 2*ch;
+    shift.lst = 2*ch*owidth;
+    shift.xmin = 0;
+    shift.ymin = 0;
+    shift.xmax = owidth;
+    shift.ymax = oheight;
+
+    maze_image_t buf;
+    buf.ch = 2*ch;
+    buf.data = malloc(2*ch*iwidth*iheight*sizeof(float));
+    buf.sst = 2*ch;
+    buf.lst = 2*ch*iwidth;
+    buf.xmin = 0;
+    buf.ymin = 0;
+    buf.xmax = iwidth;
+    buf.ymax = iheight;
+
+    maze_image_t dst;
+    dst.ch = ch;
+    dst.data = (float *)odata;
+    dst.sst = ch;
+    dst.lst = ch*owidth;
+    dst.xmin = 0;
+    dst.ymin = 0;
+    dst.xmax = owidth;
+    dst.ymax = oheight;
+
+    maze_trans_t tr0;
+    tr0.width = 128;
+    tr0.height = 128;
+    tr0.data = malloc(128 * 128 * sizeof(float));
+    dt_maze_trans_build(&tr0, NULL, 1.0, iscale / oscale);
+    const maze_trans_t *tr[4] = { &tr0, &tr0, &tr0, &tr0 };
+
+
     // acquire temp memory for image buffer
     const size_t dbuf_req = owidth * 2 * 3 * sizeof(float);
     void *dbuf = dt_alloc_align(16, dbuf_req * dt_get_num_threads());
 
-#if LENS_DEBUG
-    printf("lens: distortion\n");
-#endif
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -484,16 +527,39 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
             px[i] = pi[2 * index + 0] - roi_in->x;
             py[i] = pi[2 * index + 1] - roi_in->y;
           }
-          float val[3];
-          const int degree = 2;
-          const int pass = 1;
-          const float margin = 10*iscale;
-          const float r = 2/M_PI*iscale/oscale;
-          dt_maze_interpolate(&img, degree, pass, margin, r, px, py, val);
-          for (int i = 0; i < ch; i++)
+
+          /*
+            float val[3];
+            const int degree = 2;
+            const int pass = 1;
+            const float margin = 10*iscale;
+            const float r = 2/M_PI*iscale/oscale;
+            dt_maze_interpolate(&img, degree, pass, margin, r, px, py, val);
+
+            for (int i = 0; i < ch; i++)
             odata[ch*owidth*y+ch*x+i] = fmaxf(0.0, val[i]);
+          */
+          shift.data[y * shift.lst + x * shift.sst + 0] = px[0];
+          shift.data[y * shift.lst + x * shift.sst + 1] = px[1];
+          shift.data[y * shift.lst + x * shift.sst + 2] = px[2];
+          shift.data[y * shift.lst + x * shift.sst + 3] = px[1];
+          shift.data[y * shift.lst + x * shift.sst + 4] = py[0];
+          shift.data[y * shift.lst + x * shift.sst + 5] = py[1];
+          shift.data[y * shift.lst + x * shift.sst + 6] = py[2];
+          shift.data[y * shift.lst + x * shift.sst + 7] = py[1];
+          for (int l = 0; l < ch; l++)
+            dst.data[y * dst.lst + x * dst.sst + l] = 0.5f;
         }
     }
+
+    printf("lens: deconvolve\n");
+
+    for(int k = 0; k < 8; k++)
+      dt_maze_deconvolve(&img, &buf, &shift, &dst, tr);
+
+    free(buf.data);
+    free(shift.data);
+    free(tr0.data);
 
     dt_free_align(dbuf);
   }

@@ -41,7 +41,7 @@ dt_maze_mosaic_closest(
   const float *y,
   float *val)
 {
-  for (int ch = 0; ch < img->ch; ch++)
+  for (int ch = 0; ch < pat->ch; ch++)
   {
     const int bx = MAX(floor(x[ch] - pat->x) + 1, img->xmin);
     const int by = MAX(floor(y[ch] - pat->y) + 1, img->ymin);
@@ -79,7 +79,7 @@ dt_maze_mosaic_downsample(
 {
   const float ir = r; // todo: compensate smoothing
   const float ir2 = ir * ir;
-  for (int ch = 0; ch < img->ch; ch++)
+  for (int ch = 0; ch < pat->ch; ch++)
   {
     float v = 0.0;
     float n = 0.0;
@@ -193,7 +193,7 @@ void dt_maze_trans_build(
     {
       float dx = t->xmin + (i + 0.5f) / t->width * (t->xmax - t->xmin);
       float dy = t->ymin + (j + 0.5f) / t->height * (t->ymax - t->ymin);
-      /* t->data[t->width * j + i] = dt_maze_d1(rs, rd, sqrt(dx*dx+dy*dy)); */
+      /* t->data[t->width * j + i] = dt_maze_d1(rs, rd, sqrtf(dx*dx+dy*dy)); */
       t->data[t->width * j + i] = dt_maze_d2(rs, rd, dx, dy);
     }
 }
@@ -229,7 +229,7 @@ void dt_maze_mosaic_deconvolve(
     for(int jy = dst->ymin; jy < dst->ymax; jy++)
     {
       float *tx = shift->data + jy * shift->lst + jx * shift->sst + 0;
-      float *ty = shift->data + jy * shift->lst + jx * shift->sst + src->ch;
+      float *ty = shift->data + jy * shift->lst + jx * shift->sst + pat->ch;
       for(int px = 0; px < pat->x; px++)
         for(int py = 0; py < pat->y; py++)
         {
@@ -265,10 +265,10 @@ void dt_maze_mosaic_deconvolve(
     for(int jy = dst->ymin; jy < dst->ymax; jy++)
     {
       float *tx = shift->data + jy * shift->lst + jx * shift->sst + 0;
-      float *ty = shift->data + jy * shift->lst + jx * shift->sst + src->ch;
-      float f[src->ch];
-      float fn[src->ch];
-      for(int l = 0; l < src->ch; l++)
+      float *ty = shift->data + jy * shift->lst + jx * shift->sst + pat->ch;
+      float f[pat->ch];
+      float fn[pat->ch];
+      for(int l = 0; l < pat->ch; l++)
       {
         f[l] = 0.0f;
         fn[l] = 0.0f;
@@ -297,18 +297,93 @@ void dt_maze_mosaic_deconvolve(
               fn[l] += k;
             }
         }
-      for(int l = 0; l < src->ch; l++)
+      float s = 0.0f;
+      for(int l = 0; l < pat->ch; l++)
       {
         f[l] /= fn[l];
+        s += f[l];
         /* cmax = fmaxf(cmax, f[l]); */
         /* cmin = fminf(cmin, f[l]); */
       }
-      for(int l = 0; l < src->ch; l++)
+      for(int l = 0; l < pat->ch; l++)
         dst->data[jy * dst->lst + jx * dst->sst + l] *=
-          chroma * f[l] + (1.0f - chroma) * (f[0] + f[1] + f[2]) / 3;
+          chroma * f[l] + (1.0f - chroma) * s / 3;
     }
 
   /* printf("pass cmin=%f cmax=%f\n", cmin, cmax); */
+}
+
+void dt_maze_deconvolve(
+  const maze_image_t *src,
+  const maze_image_t *buf,
+  const maze_image_t *shift,
+  const maze_image_t *dst,
+  const maze_trans_t **tr)
+{
+  for(int ix = src->xmin; ix < src->xmax; ix++)
+    for(int iy = src->ymin; iy < src->ymax; iy++)
+      for(int l = 0; l < src->ch; l++)
+      {
+        buf->data[iy * buf->lst + ix * buf->sst + 2*l] = 0.0f;
+        buf->data[iy * buf->lst + ix * buf->sst + 2*l + 1] = 0.0f;
+      }
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+  for(int jx = dst->xmin; jx < dst->xmax; jx++)
+    for(int jy = dst->ymin; jy < dst->ymax; jy++)
+    {
+      float *tx = shift->data + jy * shift->lst + jx * shift->sst;
+      float *ty = tx + src->ch;
+      for(int l = 0; l < src->ch; l++)
+      {
+        int xb = MAX(src->xmin, floor(tx[l] + tr[l]->xmin) + 1);
+        int xe = MIN(src->xmax, ceil(tx[l] + tr[l]->xmax));
+        int yb = MAX(src->ymin, floor(ty[l] + tr[l]->ymin) + 1);
+        int ye = MIN(src->ymax, ceil(ty[l] + tr[l]->ymax));
+        for(int ix = xb; ix < xe; ix++)
+          for(int iy = yb; iy < ye; iy++)
+          {
+            float dx = ix - tx[l];
+            float dy = iy - ty[l];
+            float *c = buf->data + iy * buf->lst + ix * buf->sst + 2*l;
+            float k = dt_maze_trans_get(tr[l], dx, dy);
+            c[0] += k * dst->data[jy * dst->lst + jx * dst->sst + l];
+            c[1] += k;
+          }
+      }
+    }
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+  for(int jx = dst->xmin; jx < dst->xmax; jx++)
+    for(int jy = dst->ymin; jy < dst->ymax; jy++)
+    {
+      float *tx = shift->data + jy * shift->lst + jx * shift->sst;
+      float *ty = tx + src->ch;
+      for(int l = 0; l < src->ch; l++)
+      {
+        float f = 0.0f;
+        float fn = 0.0f;
+        int xb = MAX(src->xmin, floor(tx[l] + tr[l]->xmin) + 1);
+        int xe = MIN(src->xmax, ceil(tx[l] + tr[l]->xmax));
+        int yb = MAX(src->ymin, floor(ty[l] + tr[l]->ymin) + 1);
+        int ye = MIN(src->ymax, ceil(ty[l] + tr[l]->ymax));
+        for(int ix = xb; ix < xe; ix++)
+          for(int iy = yb; iy < ye; iy++)
+          {
+            float dx = ix - tx[l];
+            float dy = iy - ty[l];
+            float *c = buf->data + iy * buf->lst + ix * buf->sst + 2*l;
+            float k = dt_maze_trans_get(tr[l], dx, dy);
+            f += k * src->data[iy * src->lst + ix * src->sst + l] / c[0] * c[1];
+            fn += k;
+          }
+        dst->data[jy * dst->lst + jx * dst->sst + l] *= f / fn;
+      }
+    }
 }
 
 void
@@ -324,22 +399,22 @@ dt_maze_mosaic_interpolate(
 {
   const float margin = 8.0;
 
-  const int degn = lin_size(2, deg) + img->ch - 1;
+  const int degn = lin_size(2, deg) + pat->ch - 1;
 
-  float er[img->ch], mr[img->ch], ir[img->ch];
-  for (int ch = 0; ch < img->ch; ch++)
+  float er[pat->ch], mr[pat->ch], ir[pat->ch];
+  for (int ch = 0; ch < pat->ch; ch++)
   {
     er[ch] = ch == 1 ? MAX(1.44, r) : MAX(2.0, r);
     mr[ch] = MAX(4.0, deg); // margin radius
     ir[ch] = MAX(mr[ch], r); // input radius
   }
 
-  for (int ch = 0; ch < img->ch; ch++)
+  for (int ch = 0; ch < pat->ch; ch++)
     val[ch] = 0.0;
 
   // check boundaries
   int outside = 0;
-  for (int ch = 0; ch < img->ch; ch++)
+  for (int ch = 0; ch < pat->ch; ch++)
   {
     if (x[ch] < img->xmin - margin ||
         y[ch] < img->ymin - margin ||
@@ -361,13 +436,13 @@ dt_maze_mosaic_interpolate(
   // retreive the data
   int vcount = 0;
   int vcountmax = 1024;
-  float sk[img->ch];
-  float sv[img->ch];
+  float sk[pat->ch];
+  float sv[pat->ch];
   int vc[vcountmax];
   float vk[vcountmax], ve[vcountmax];
   float vx[vcountmax], vy[vcountmax];
   float vv[vcountmax];
-  for (int ch = 0; ch < img->ch; ch++)
+  for (int ch = 0; ch < pat->ch; ch++)
   {
     sk[ch] = 0.0;
     sv[ch] = 0.0;
@@ -402,11 +477,11 @@ dt_maze_mosaic_interpolate(
   assert(vcount < vcountmax);
 
   int downscale = 0; // debug: should be 1
-  for (int ch = 0; ch < img->ch; ch++)
+  for (int ch = 0; ch < pat->ch; ch++)
     downscale &= sk[ch] > degn;
   if (outside || downscale)
   {
-    for (int ch = 0; ch < img->ch; ch++)
+    for (int ch = 0; ch < pat->ch; ch++)
       val[ch] = sv[ch] / sk[ch];
     return;
   }
@@ -417,7 +492,7 @@ dt_maze_mosaic_interpolate(
 
   lin_zero(degn, mt, vt);
   for (int c = 0; c < vcount; c++)
-    lin_push2m(degn, img->ch, deg, mt, vt, vc[c], vx[c], vy[c], vk[c], vv[c]);
+    lin_push2m(degn, pat->ch, deg, mt, vt, vc[c], vx[c], vy[c], vk[c], vv[c]);
   int unk = lin_solve(degn, mt, vt, st);
   if (unk != 0)
   {
@@ -432,19 +507,19 @@ dt_maze_mosaic_interpolate(
     lin_zero(degn, mt, vt);
     for (int c = 0; c < vcount; c++)
     {
-      float av = lin_get2m(deg, img->ch, st, vc[c], vx[c], vy[c]);
+      float av = lin_get2m(deg, pat->ch, st, vc[c], vx[c], vy[c]);
       float dv = vv[c] - av;
       float dn = 1; // todo: relativize
       float d = dv / dn;
       float e = 1 + ve[c]*d*d;
-      lin_push2m(degn, img->ch, deg, mt, vt,
+      lin_push2m(degn, pat->ch, deg, mt, vt,
                  vc[c], vx[c], vy[c], vk[c]/e, vv[c]);
     }
     if (lin_solve(degn, mt, vt, st) != 0) break;
   }
 
-  for (int ch = 0; ch < img->ch; ch++)
-    val[ch] = lin_get2m_mean(deg, img->ch, st, ch, 0.5*r); // anti-aliasing
+  for (int ch = 0; ch < pat->ch; ch++)
+    val[ch] = lin_get2m_mean(deg, pat->ch, st, ch, 0.5*r); // anti-aliasing
 }
 
 float

@@ -535,7 +535,7 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 #endif
 
   maze_image_t img;
-  img.ch = 3;
+  img.ch = 1;
   img.data = (float *)idata;
   img.sst = 1;
   img.lst = iwidth;
@@ -551,6 +551,7 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   maze_pattern_t pat;
   pat.x = 2;
   pat.y = 2;
+  pat.ch = 3;
   pat.data = patdata;
   pat.offx = !ca & 1;
   pat.offy = fb & 1;

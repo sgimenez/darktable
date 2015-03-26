@@ -33,6 +33,7 @@ typedef struct {
 typedef struct {
   int x;
   int y;
+  int ch;
   const int *data;
   int offx;
   int offy;
@@ -96,6 +97,14 @@ dt_maze_mosaic_deconvolve(
   const maze_image_t *dst,
   const maze_trans_t **tr,
   const float chroma);
+
+void
+dt_maze_deconvolve(
+  const maze_image_t *src,
+  const maze_image_t *buf,
+  const maze_image_t *shift,
+  const maze_image_t *dst,
+  const maze_trans_t **tr);
 
 void
 dt_maze_trans_build(
