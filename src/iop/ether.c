@@ -586,6 +586,7 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   dst.xmax = owidth;
   dst.ymax = oheight;
 
+#if 0
   maze_trans_t tr1;
   tr1.width = 128;
   tr1.height = 128;
@@ -596,6 +597,29 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
   tr2.height = 128;
   tr2.data = malloc(128 * 128 * sizeof(float));
   dt_maze_trans_build(&tr2, NULL, sqrt(2.0f), 1.0f / oscale);
+#else
+  maze_trans_t w1;
+  w1.width = 128;
+  w1.height = 128;
+  w1.data = malloc(128 * 128 * sizeof(float));
+  dt_maze_weight_0(&w1, 2.0f);
+  maze_trans_t w2;
+  w2.width = 128;
+  w2.height = 128;
+  w2.data = malloc(128 * 128 * sizeof(float));
+  dt_maze_weight_45(&w2, 2.0f);
+  maze_trans_t tr1;
+  tr1.width = 128;
+  tr1.height = 128;
+  tr1.data = malloc(128 * 128 * sizeof(float));
+  dt_maze_weight_trans(&tr1, &w1, 1.0f / oscale);
+  maze_trans_t tr2;
+  tr2.width = 128;
+  tr2.height = 128;
+  tr2.data = malloc(128 * 128 * sizeof(float));
+  dt_maze_weight_trans(&tr2, &w2, 1.0f / oscale);
+#endif
+
   const maze_trans_t *tr[3] = { &tr1, &tr2, &tr1 };
 
 #ifdef _OPENMP
@@ -694,6 +718,8 @@ static void CA_correct(dt_iop_module_t *const self, dt_dev_pixelpipe_iop_t *cons
 
   free(buf.data);
   free(shift.data);
+  free(w1.data);
+  free(w2.data);
   free(tr1.data);
   free(tr2.data);
 
@@ -892,6 +918,9 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_combobox_add(g->tcombo4, _("3"));
   dt_bauhaus_combobox_add(g->tcombo4, _("4"));
   dt_bauhaus_combobox_add(g->tcombo4, _("5"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("6"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("7"));
+  dt_bauhaus_combobox_add(g->tcombo4, _("8"));
   g_signal_connect(G_OBJECT(g->tcombo4), "value-changed", G_CALLBACK(ideconv_changed), (gpointer)self);
   gtk_box_pack_start(GTK_BOX(self->widget), g->tcombo4, TRUE, TRUE, 0);
 

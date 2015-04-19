@@ -178,6 +178,134 @@ float dt_maze_d2(float rs, float rd, float dx, float dy)
   return dt_maze_d1(rs, rd, dx) * dt_maze_d1(rs, rd, dy);
 }
 
+float dt_interpolation_linear(float r, float x)
+{
+  float ax = fabs(x / r);
+  return fmax(0.0f, 1.0f - ax);
+}
+
+float dt_interpolation_bilinear(float r, float x)
+{
+  float A = - 0.5f;
+  float ax = fabs(x / r);
+  if (ax < 1.0f)
+    return (A + 2) * ax * ax * ax - (A + 3) * ax * ax + 1;
+  else if (ax < 2.0f)
+    return A * ax * ax * ax - 5 * A * ax * ax + 8 * A * ax - 4 * A;
+  else
+    return 0.0f;
+}
+
+float dt_pixel_l0(float r, float i, float j)
+{
+  return dt_interpolation_linear(r, i) * dt_interpolation_linear(r, j);
+}
+
+float dt_pixel_l45(float r, float i, float j)
+{
+  return dt_pixel_l0(r, i + j, i - j);
+}
+
+float dt_pixel_b0(float r, float i, float j)
+{
+  return dt_interpolation_bilinear(r, i) * dt_interpolation_bilinear(r, j);
+}
+
+float dt_pixel_b45(float r, float i, float j)
+{
+  return dt_pixel_b0(r, i + j, i - j);
+}
+
+float dt_maze_trans_get(const maze_trans_t *tr, float dx, float dy)
+{
+  int i = (dx - tr->xmin) / (tr->xmax - tr->xmin) * tr->width;
+  int j = (dy - tr->ymin) / (tr->ymax - tr->ymin) * tr->height;
+  return tr->data[tr->width * j + i];
+}
+
+void print_trans(maze_trans_t *t)
+{
+  printf("xmin=%f xmax=%f ymin=%f ymax=%f\n",
+         t->xmin, t->xmax, t->ymin, t->ymax);
+  for(int i = 4; i < t->width; i += 8)
+  {
+    for(int j = 4; j < t->height; j += 8)
+      printf("%2.2f ", t->data[t->width * j + i]);
+    printf("\n");
+  }
+  printf("\n");
+}
+
+void dt_maze_weight_0(
+  maze_trans_t *t,
+  float r)
+{
+  t->xmin = - r;
+  t->ymin = - r;
+  t->xmax = + r;
+  t->ymax = + r;
+  for(int i = 0; i < t->width; i++)
+    for(int j = 0; j < t->height; j++)
+    {
+      float dx = t->xmin + (i + 0.5f) / t->width * (t->xmax - t->xmin);
+      float dy = t->ymin + (j + 0.5f) / t->height * (t->ymax - t->ymin);
+      t->data[t->width * j + i] = dt_pixel_l0(r, dx, dy);
+    }
+}
+
+void dt_maze_weight_45(
+  maze_trans_t *t,
+  float r)
+{
+  t->xmin = - r;
+  t->ymin = - r;
+  t->xmax = + r;
+  t->ymax = + r;
+  for(int i = 0; i < t->width; i++)
+    for(int j = 0; j < t->height; j++)
+    {
+      float dx = t->xmin + (i + 0.5f) / t->width * (t->xmax - t->xmin);
+      float dy = t->ymin + (j + 0.5f) / t->height * (t->ymax - t->ymin);
+      t->data[t->width * j + i] = dt_pixel_l45(r, dx, dy);
+    }
+}
+
+void dt_maze_weight_trans(
+  maze_trans_t *t,
+  maze_trans_t *w,
+  float r)
+{
+  t->xmin = w->xmin - r;
+  t->ymin = w->ymin - r;
+  t->xmax = w->xmax + r;
+  t->ymax = w->ymax + r;
+  const int d = 8;
+  for(int i = 0; i < t->width; i++)
+    for(int j = 0; j < t->height; j++)
+      t->data[t->width * j + i] = 0.0f;
+  for(int i = 0; i < t->width; i++)
+    for(int j = 0; j < t->height; j++)
+    {
+      float dx = t->xmin + (i + 0.5f) / t->width * (t->xmax - t->xmin);
+      float dy = t->ymin + (j + 0.5f) / t->height * (t->ymax - t->ymin);
+      for(int u = -d+1; u < d ; u++)
+        for(int v = -d+1; v < d; v++)
+        {
+          float du = (float)u * r / d;
+          float dv = (float)v * r / d;
+          float px = dx + du;
+          float py = dy + dv;
+          if (px <= w->xmin || px >= w->xmax || py <= w->ymin || py >= w->ymax)
+            continue;
+          float k = dt_pixel_l0(r, du, dv) / (4 * d * d);
+          float v = dt_maze_trans_get(w, px, py);
+          t->data[t->width * j + i] += k * v;
+        }
+    }
+  /* print_trans(w); */
+  /* print_trans(t); */
+}
+
 void dt_maze_trans_build(
   maze_trans_t *t,
   const maze_pattern_t *pat,
@@ -198,13 +326,6 @@ void dt_maze_trans_build(
     }
 }
 
-float dt_maze_trans_get(const maze_trans_t *tr, float dx, float dy)
-{
-  int i = (dx - tr->xmin) / (tr->xmax - tr->xmin) * tr->width;
-  int j = (dy - tr->ymin) / (tr->ymax - tr->ymin) * tr->height;
-  return tr->data[tr->width * j + i];
-}
-
 void dt_maze_mosaic_deconvolve(
   const maze_image_t *src,
   const maze_pattern_t *pat,
@@ -215,8 +336,8 @@ void dt_maze_mosaic_deconvolve(
   const float chroma)
 
 {
-  for(int ix = src->xmin; ix < src->xmax; ix++)
-    for(int iy = src->ymin; iy < src->ymax; iy++)
+  for(int ix = buf->xmin; ix < buf->xmax; ix++)
+    for(int iy = buf->ymin; iy < buf->ymax; iy++)
     {
       buf->data[iy * buf->lst + ix * buf->sst] = 0.0f;
       buf->data[iy * buf->lst + ix * buf->sst + 1] = 0.0f;
@@ -234,10 +355,10 @@ void dt_maze_mosaic_deconvolve(
         for(int py = 0; py < pat->y; py++)
         {
           int l = pat->data[py*pat->x + px];
-          int xb = MAX(src->xmin, floor(tx[l] + tr[l]->xmin) + 1);
-          int xe = MIN(src->xmax, ceil(tx[l] + tr[l]->xmax));
-          int yb = MAX(src->ymin, floor(ty[l] + tr[l]->ymin) + 1);
-          int ye = MIN(src->ymax, ceil(ty[l] + tr[l]->ymax));
+          int xb = MAX(buf->xmin, floor(tx[l] + tr[l]->xmin) + 1);
+          int xe = MIN(buf->xmax, ceil(tx[l] + tr[l]->xmax));
+          int yb = MAX(buf->ymin, floor(ty[l] + tr[l]->ymin) + 1);
+          int ye = MIN(buf->ymax, ceil(ty[l] + tr[l]->ymax));
           int xo = (px - xb - pat->offx)%pat->x;
           int yo = (py - yb - pat->offy)%pat->y;
           if (xo < 0) xo += pat->x;
@@ -247,10 +368,10 @@ void dt_maze_mosaic_deconvolve(
             {
               float dx = ix - tx[l];
               float dy = iy - ty[l];
-              float *c = buf->data + iy * buf->lst + ix * buf->sst;
+              float *b = buf->data + iy * buf->lst + ix * buf->sst;
               float k = dt_maze_trans_get(tr[l], dx, dy);
-              c[0] += k * dst->data[jy * dst->lst + jx * dst->sst + l];
-              c[1] += k;
+              b[0] += k * dst->data[jy * dst->lst + jx * dst->sst + l];
+              b[1] += k;
             }
         }
     }
@@ -290,24 +411,29 @@ void dt_maze_mosaic_deconvolve(
             {
               float dx = ix - tx[l];
               float dy = iy - ty[l];
-              float *c = buf->data + iy * buf->lst + ix * buf->sst;
-              float k = dt_maze_trans_get(tr[l], dx, dy);
-              f[l] += k * src->data[iy * src->lst + ix * src->sst]
-                / c[0] * c[1];
-              fn[l] += k;
+              float *b = buf->data + iy * buf->lst + ix * buf->sst;
+              float k = dt_maze_trans_get(tr[l], dx, dy) * b[1]; //todo?
+              float v = src->data[iy * src->lst + ix * src->sst] / b[0] * b[1];
+              /* if (k > 0) // todo: why NANs? */
+              /* { */
+                f[l] += k * v;
+                fn[l] += k;
+              /* } */
             }
         }
       float s = 0.0f;
+      float sn = 0.0f;
       for(int l = 0; l < pat->ch; l++)
       {
-        f[l] /= fn[l];
         s += f[l];
+        sn += fn[l];
+        f[l] /= fn[l];
         /* cmax = fmaxf(cmax, f[l]); */
         /* cmin = fminf(cmin, f[l]); */
       }
       for(int l = 0; l < pat->ch; l++)
         dst->data[jy * dst->lst + jx * dst->sst + l] *=
-          chroma * f[l] + (1.0f - chroma) * s / 3;
+          chroma * f[l] + (1.0f - chroma) * s / sn;
     }
 
   /* printf("pass cmin=%f cmax=%f\n", cmin, cmax); */

@@ -31,15 +31,6 @@ typedef struct {
 } maze_image_t;
 
 typedef struct {
-  int x;
-  int y;
-  int ch;
-  const int *data;
-  int offx;
-  int offy;
-} maze_pattern_t;
-
-typedef struct {
   float *data;
   int width;
   int height;
@@ -48,6 +39,16 @@ typedef struct {
   float xmax;
   float ymax;
 } maze_trans_t;
+
+typedef struct {
+  int x;
+  int y;
+  int ch;
+  const int *data;
+  int offx;
+  int offy;
+  maze_trans_t *weight;
+} maze_pattern_t;
 
 void
 dt_maze_interpolate(
@@ -112,5 +113,13 @@ dt_maze_trans_build(
   const maze_pattern_t *pat,
   float rs,
   float rd);
+
+void dt_maze_weight_0(maze_trans_t *t, float r);
+void dt_maze_weight_45(maze_trans_t *t, float r);
+
+void dt_maze_weight_trans(
+  maze_trans_t *t,
+  maze_trans_t *w,
+  float r);
 
 #endif

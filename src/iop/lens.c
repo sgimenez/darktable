@@ -481,13 +481,22 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
     dst.xmax = owidth;
     dst.ymax = oheight;
 
+    maze_trans_t w0;
+    w0.width = 128;
+    w0.height = 128;
+    w0.data = malloc(128 * 128 * sizeof(float));
+    dt_maze_weight_0(&w0, 1.0f);
     maze_trans_t tr0;
     tr0.width = 128;
     tr0.height = 128;
     tr0.data = malloc(128 * 128 * sizeof(float));
+#if 1
     dt_maze_trans_build(&tr0, NULL, 1.0, iscale / oscale);
-    const maze_trans_t *tr[4] = { &tr0, &tr0, &tr0, &tr0 };
+#else
+    dt_maze_weight_trans(&tr0, &w0, iscale / oscale);
+#endif
 
+    const maze_trans_t *tr[4] = { &tr0, &tr0, &tr0, &tr0 };
 
     // acquire temp memory for image buffer
     const size_t dbuf_req = owidth * 2 * 3 * sizeof(float);
@@ -559,6 +568,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
 
     free(buf.data);
     free(shift.data);
+    free(w0.data);
     free(tr0.data);
 
     dt_free_align(dbuf);
